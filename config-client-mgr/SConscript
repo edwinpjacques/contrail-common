@@ -12,10 +12,10 @@ env.Append(CPPPATH = [env['TOP'] + '/config-client-mgr'])
 env.Append(CPPPATH = [env['TOP'] + '/base/sandesh'])
 env.Append(CPPPATH = [env['TOP'] + '/database'])
 
-etcd_incl = os.environ.get('CONTRAIL_ETCD_INCL');
+etcd_incl = os.environ.get('CONTRAIL_K8S_CONFIG');
 
 if etcd_incl:
-    env.Append(CXXFLAGS = '-Wall -DCONTRAIL_ETCD_INCL -std=c++11')
+    env.Append(CXXFLAGS = '-Wall -DCONTRAIL_K8S_CONFIG -std=c++11')
     env.Prepend(LIBS=['etcdql'])
 
 env.Prepend(LIBS=['io', 'base', 'cassandra_cql', 'cassandra', 'gendb', 'SimpleAmqpClient'])
