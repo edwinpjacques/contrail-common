@@ -151,7 +151,7 @@ private:
         string value;
     };
 
-    typedef map<string, UUIDProcessRequestType *> UUIDProcessSet;
+    typedef map<string, boost::shared_ptr<UUIDProcessRequestType> > UUIDProcessSet;
 
     bool RequestHandler(ObjectProcessReq *req);
     void AddUUIDToProcessList(const string &oper,

@@ -577,8 +577,8 @@ void ConfigEtcdPartition::AddUUIDToProcessList(const string &oper,
       */
     size_t front_pos = uuid_key.rfind('/');
     string uuid = uuid_key.substr(front_pos + 1);
-    UUIDProcessRequestType *req =
-        new UUIDProcessRequestType(oper, uuid, value_str);
+    boost::shared_ptr<UUIDProcessRequestType> req(
+        new UUIDProcessRequestType(oper, uuid, value_str));
     ret = uuid_process_set_.insert(make_pair(client()->GetUUID(uuid), req));
     if (ret.second) {
         /**
@@ -601,7 +601,7 @@ void ConfigEtcdPartition::AddUUIDToProcessList(const string &oper,
             uuid_process_set_.erase(ret.first);
             client()->PurgeFQNameCache(uuid);
         } else {
-            delete req;
+            req.reset();
             ret.first->second->oper = oper;
             ret.first->second->uuid = uuid;
             ret.first->second->value = value_str;
@@ -1272,7 +1272,7 @@ bool ConfigEtcdPartition::ConfigReader() {
         itnext = it;
         ++itnext;
 
-        UUIDProcessRequestType *obj_req = it->second;
+        boost::shared_ptr<UUIDProcessRequestType> obj_req = it->second;
 
         if (obj_req->oper == "CREATE" || obj_req->oper == "UPDATE") {
             ProcessUUIDUpdate(obj_req->uuid, obj_req->value);
@@ -1305,6 +1305,6 @@ bool ConfigEtcdPartition::ConfigReader() {
 void ConfigEtcdPartition::RemoveObjReqEntry(string &uuid) {
     UUIDProcessSet::iterator req_it =
         uuid_process_set_.find(client()->GetUUID(uuid));
-    delete req_it->second;
+    req_it->second.reset();
     uuid_process_set_.erase(req_it);
 }
