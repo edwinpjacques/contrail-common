@@ -767,8 +767,8 @@ ConfigEtcdPartition::UUIDCacheEntry::EtcdReadRetryTimerErrorHandler() {
 
 bool ConfigEtcdPartition::UUIDCacheEntry::ListOrMapPropEmpty(
          const string &prop) const {
-    ListMapSet::const_iterator it = list_map_set_.find(prop);
-    if (it == list_map_set_.end()) {
+    PropEmptyMap::const_iterator it = prop_empty_map_.find(prop);
+    if (it == prop_empty_map_.end()) {
         return true;
     }
     return (it->second == false);

@@ -69,7 +69,7 @@ class ConfigEtcdPartition {
         }
 
         void SetListOrMapPropEmpty(const string &prop, bool empty) {
-            list_map_set_.insert(make_pair(prop.c_str(), empty));
+            prop_empty_map_.insert(make_pair(prop.c_str(), empty));
         }
         bool ListOrMapPropEmpty(const string &prop) const;
 
@@ -87,8 +87,8 @@ class ConfigEtcdPartition {
         bool EtcdReadRetryTimerExpired(const string uuid,
                                        const string value);
         void EtcdReadRetryTimerErrorHandler();
-        typedef map<string, bool> ListMapSet;
-        ListMapSet list_map_set_;
+        typedef map<string, bool> PropEmptyMap;
+        PropEmptyMap prop_empty_map_;
         uint32_t retry_count_;
         Timer *retry_timer_;
         string json_str_;
