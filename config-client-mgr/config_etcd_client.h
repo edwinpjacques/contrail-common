@@ -100,15 +100,14 @@ class ConfigEtcdPartition {
 
     typedef boost::ptr_map<string, UUIDCacheEntry> UUIDCacheMap;
 
+    // Get the cache entry if it exists, or return NULL.
     UUIDCacheEntry *GetUUIDCacheEntry(const string &uuid);
-    const UUIDCacheEntry *GetUUIDCacheEntry(const string &uuid) const;
+    // Get the cache entry if it exists or create/set it.
+    // is_new flag is set to true if it is new.
     UUIDCacheEntry *GetUUIDCacheEntry(const string &uuid,
                                       const string &value_str,
                                       bool &is_new);
-    const UUIDCacheEntry *GetUUIDCacheEntry(const string &uuid,
-                                            const string &value_str,
-                                            bool &is_new) const;
-    void DeleteCacheMap(const string &uuid) {
+    void DeleteUUIDCacheEntry(const string &uuid) {
         uuid_cache_map_.erase(uuid);
     }
     virtual int UUIDRetryTimeInMSec(const UUIDCacheEntry *obj) const;
@@ -138,8 +137,6 @@ protected:
     }
 
 private:
-    friend class ConfigEtcdClient;
-
     struct UUIDProcessRequestType {
         UUIDProcessRequestType(const string &in_oper,
                                  const string &in_uuid,

@@ -1153,7 +1153,7 @@ void ConfigEtcdPartition::ProcessUUIDUpdate(const string &uuid_key,
             string mode = itr->value.GetString();
             if (!mode.empty()) {
                 client()->PurgeFQNameCache(uuid_key);
-                DeleteCacheMap(uuid_key);
+                DeleteUUIDCacheEntry(uuid_key);
                 return;
             }
             itr = updDoc.EraseMember(itr);
