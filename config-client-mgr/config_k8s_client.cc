@@ -55,7 +55,7 @@ bool ConfigK8sClient::disable_watch_;
 /**
   * K8S Watcher class to enable watching for any changes
   * to config.
-  * Invokes etcd::Watch() which watches the K8S server for
+  * Invokes k8s::Watch() which watches the K8S server for
   * any changes and invokes provided callback when a change
   * is detected.
   */

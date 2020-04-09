@@ -90,7 +90,7 @@ public:
         Timer *GetRetryTimer() { return retry_timer_; }
 
     private:
-        friend class ConfigEtcdPartitionTest;
+        friend class ConfigK8sJsonPartitionTest;
         bool K8sReadRetryTimerExpired(const string uuid,
                                       const string value);
         void K8sReadRetryTimerErrorHandler();
@@ -249,7 +249,7 @@ protected:
 private:
     friend class ConfigK8sPartition;
 
-    // A Job for watching changes to config stored in etcd
+    // A Job for watching changes to config stored in K8s
     class K8sWatcher;
 
     bool InitRetry();
