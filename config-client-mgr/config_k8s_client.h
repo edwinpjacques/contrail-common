@@ -2,8 +2,8 @@
  * Copyright (c) 2018 Juniper Networks, Inc. All rights reserved.
  */
 
-#ifndef config_etcd_client_h
-#define config_etcd_client_h
+#ifndef config_k8s_client_h
+#define config_k8s_client_h
 
 #include <boost/ptr_container/ptr_map.hpp>
 #include <boost/shared_ptr.hpp>
@@ -25,74 +25,81 @@
 #include "json_adapter_data.h"
 
 using namespace std;
-using etcd::etcdql::EtcdIf;
-using etcd::etcdql::EtcdResponse;
 using contrail_rapidjson::Document;
 using contrail_rapidjson::Value;
+using etcd::etcdql::EtcdIf;
+using etcd::etcdql::EtcdResponse;
 
 class EventManager;
 class ConfigClientManager;
 struct ConfigDBConnInfo;
 class TaskTrigger;
-class ConfigEtcdClient;
+class ConfigK8sClient;
 class ConfigDBUUIDCacheEntry;
 
-class ConfigEtcdPartition {
- public:
-    ConfigEtcdPartition(ConfigEtcdClient *client, size_t idx);
-    virtual ~ConfigEtcdPartition();
+class ConfigK8sPartition
+{
+public:
+    ConfigK8sPartition(ConfigK8sClient *client, size_t idx);
+    virtual ~ConfigK8sPartition();
 
-    typedef boost::shared_ptr<WorkQueue<ObjectProcessReq *> >
-             UUIDProcessRequestQPtr;
+    typedef boost::shared_ptr<WorkQueue<ObjectProcessReq *>>
+        UUIDProcessRequestQPtr;
 
-    class UUIDCacheEntry : public ObjectCacheEntry {
-     public:
-        UUIDCacheEntry(ConfigEtcdPartition *parent,
+    class UUIDCacheEntry : public ObjectCacheEntry
+    {
+    public:
+        UUIDCacheEntry(ConfigK8sPartition *parent,
                        const string &value_str,
                        uint64_t last_read_tstamp)
-                : ObjectCacheEntry(last_read_tstamp),
-                  retry_count_(0),
-                  retry_timer_(NULL),
-                  json_str_(value_str),
-                  parent_(parent) {
+            : ObjectCacheEntry(last_read_tstamp),
+              retry_count_(0),
+              retry_timer_(NULL),
+              json_str_(value_str),
+              parent_(parent)
+        {
         }
 
         ~UUIDCacheEntry();
 
-        void EnableEtcdReadRetry(const string uuid,
-                                 const string value);
-        void DisableEtcdReadRetry(const string uuid);
+        void EnableK8sReadRetry(const string uuid,
+                                const string value);
+        void DisableK8sReadRetry(const string uuid);
 
         const string &GetJsonString() const { return json_str_; }
-        void SetJsonString(const string &value_str) {
+        void SetJsonString(const string &value_str)
+        {
             json_str_ = value_str;
         }
 
-        void SetListOrMapPropEmpty(const string &prop, bool empty) {
+        void SetListOrMapPropEmpty(const string &prop, bool empty)
+        {
             prop_empty_map_.insert(make_pair(prop.c_str(), empty));
         }
         bool ListOrMapPropEmpty(const string &prop) const;
 
-        uint32_t GetRetryCount() const {
+        uint32_t GetRetryCount() const
+        {
             return retry_count_;
         }
-        bool IsRetryTimerCreated() const {
+        bool IsRetryTimerCreated() const
+        {
             return (retry_timer_ != NULL);
         }
         bool IsRetryTimerRunning() const;
         Timer *GetRetryTimer() { return retry_timer_; }
 
-     private:
+    private:
         friend class ConfigEtcdPartitionTest;
-        bool EtcdReadRetryTimerExpired(const string uuid,
-                                       const string value);
-        void EtcdReadRetryTimerErrorHandler();
+        bool K8sReadRetryTimerExpired(const string uuid,
+                                      const string value);
+        void K8sReadRetryTimerErrorHandler();
         typedef map<string, bool> PropEmptyMap;
         PropEmptyMap prop_empty_map_;
         uint32_t retry_count_;
         Timer *retry_timer_;
         string json_str_;
-        ConfigEtcdPartition *parent_;
+        ConfigK8sPartition *parent_;
     };
 
     static const uint32_t kMaxUUIDRetryTimePowOfTwo = 20;
@@ -107,7 +114,8 @@ class ConfigEtcdPartition {
     UUIDCacheEntry *GetUUIDCacheEntry(const string &uuid,
                                       const string &value_str,
                                       bool &is_new);
-    void DeleteUUIDCacheEntry(const string &uuid) {
+    void DeleteUUIDCacheEntry(const string &uuid)
+    {
         uuid_cache_map_.erase(uuid);
     }
     virtual int UUIDRetryTimeInMSec(const UUIDCacheEntry *obj) const;
@@ -128,52 +136,55 @@ class ConfigEtcdPartition {
     virtual bool IsTaskTriggered() const;
 
 protected:
-    ConfigEtcdClient *client() {
+    ConfigK8sClient *client()
+    {
         return config_client_;
     }
 
 private:
-    struct UUIDProcessRequestType {
+    struct UUIDProcessRequestType
+    {
         UUIDProcessRequestType(const string &in_oper,
-                                 const string &in_uuid,
-                                 const string &in_value)
-            : oper(in_oper), uuid(in_uuid), value(in_value) {
+                               const string &in_uuid,
+                               const string &in_value)
+            : oper(in_oper), uuid(in_uuid), value(in_value)
+        {
         }
         string oper;
         string uuid;
         string value;
     };
 
-    typedef map<string, boost::shared_ptr<UUIDProcessRequestType> > UUIDProcessRequestMap;
+    typedef map<string, boost::shared_ptr<UUIDProcessRequestType>> UUIDProcessRequestMap;
 
     bool ObjectProcessReqHandler(ObjectProcessReq *req);
     void AddUUIDToProcessRequestMap(const string &oper,
-                              const string &uuid_key,
-                              const string &value_str);
+                                    const string &uuid_key,
+                                    const string &value_str);
     bool ConfigReader();
     void ProcessUUIDUpdate(const string &uuid_key,
                            const string &value_str);
     void ProcessUUIDDelete(const string &uuid_key);
     virtual bool GenerateAndPushJson(
-            const string &uuid_key,
-            Document &doc,
-            bool add_change,
-            UUIDCacheEntry *cache);
+        const string &uuid_key,
+        Document &doc,
+        bool add_change,
+        UUIDCacheEntry *cache);
     void RemoveObjReqEntry(string &uuid);
 
-    // 
+    //
     boost::shared_ptr<TaskTrigger> config_reader_;
 
     // Pointer to incoming work for this partition (thread).
     // Work include type (CREATE/UPDATE/DELETE), UUID and value (json).
     UUIDProcessRequestQPtr obj_process_request_queue_;
-    // Map of UUID to process requests. 
+    // Map of UUID to process requests.
     UUIDProcessRequestMap uuid_process_request_map_;
-    
+
     // Map of UUID to JSON data.  Maintains last_read_tstamp_ retry metadata.
     UUIDCacheMap uuid_cache_map_;
-    
-    ConfigEtcdClient *config_client_;
+
+    ConfigK8sClient *config_client_;
     int worker_id_;
 };
 
@@ -181,26 +192,27 @@ private:
  * This class has the functionality to interact with the cassandra servers that
  * store the user configuration.
  */
-class ConfigEtcdClient : public ConfigDbClient {
- public:
-    typedef vector<ConfigEtcdPartition *> PartitionList;
+class ConfigK8sClient : public ConfigDbClient
+{
+public:
+    typedef vector<ConfigK8sPartition *> PartitionList;
 
-    ConfigEtcdClient(ConfigClientManager *mgr, EventManager *evm,
-                          const ConfigClientOptions &options,
-                          int num_workers);
-    virtual ~ConfigEtcdClient();
+    ConfigK8sClient(ConfigClientManager *mgr, EventManager *evm,
+                    const ConfigClientOptions &options,
+                    int num_workers);
+    virtual ~ConfigK8sClient();
 
     // Called by InitConfigClient() to initialize bulk synchronization.
     virtual void InitDatabase();
     void BulkSyncDone();
     void EnqueueUUIDRequest(string oper, string obj_type,
-                                    string uuid_str);
+                            string uuid_str);
 
-    ConfigEtcdPartition *GetPartition(const string &uuid);
-    const ConfigEtcdPartition *GetPartition(const string &uuid) const;
-    const ConfigEtcdPartition *GetPartition(int worker_id) const;
+    ConfigK8sPartition *GetPartition(const string &uuid);
+    const ConfigK8sPartition *GetPartition(const string &uuid) const;
+    const ConfigK8sPartition *GetPartition(int worker_id) const;
 
-    // Start ETCD watch for config updates
+    // Start K8s watch for config updates
     // Invoked by ConfigClientManager
     void StartWatcher();
 
@@ -217,9 +229,11 @@ class ConfigEtcdClient : public ConfigDbClient {
     virtual void ProcessResponse(EtcdResponse resp);
 
     // For testing
-    static void set_watch_disable(bool disable) {
+    static void set_watch_disable(bool disable)
+    {
         disable_watch_ = disable;
     }
+
 protected:
     typedef pair<string, string> UUIDValueType;
     typedef list<UUIDValueType> UUIDValueList;
@@ -233,19 +247,19 @@ protected:
     virtual void PostShutdown();
 
 private:
-    friend class ConfigEtcdPartition;
+    friend class ConfigK8sPartition;
 
     // A Job for watching changes to config stored in etcd
-    class EtcdWatcher;
+    class K8sWatcher;
 
     bool InitRetry();
 
-    // BulkDataSync of all object types from etcd
+    // BulkDataSync of all object types from K8s
     bool UUIDReader();
 
     // Set and log connection status
-    void HandleEtcdConnectionStatus(bool success,
-                                    bool force_update = false);
+    void HandleK8sConnectionStatus(bool success,
+                                   bool force_update = false);
 
     // For testing
     static bool disable_watch_;
@@ -257,4 +271,4 @@ private:
     tbb::atomic<long> bulk_sync_status_;
 };
 
-#endif  // config_etcd_client_h
+#endif // config_k8s_client_h

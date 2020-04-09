@@ -99,12 +99,11 @@ void ConfigClientManager::SetDefaultSchedulingPolicy() {
     scheduler->SetPolicy(scheduler->GetTaskId("amqp::RabbitMQReader"),
         rabbitmq_reader_policy);
 
-    // Policy for etcd::EtcdWatcher process
-    TaskPolicy etcd_watcher_policy = boost::assign::list_of
+    // Policy for k8s::K8sWatcher process
+    TaskPolicy k8s_watcher_policy = boost::assign::list_of
         (TaskExclusion(scheduler->GetTaskId("config_client::Init")));
-    scheduler->SetPolicy(scheduler->GetTaskId("etcd::EtcdWatcher"),
-        etcd_watcher_policy);
-
+    scheduler->SetPolicy(scheduler->GetTaskId("k8s::K8sWatcher"),
+        k8s_watcher_policy);
 }
 
 void ConfigClientManager::SetUp() {
@@ -114,7 +113,7 @@ void ConfigClientManager::SetUp() {
     end_of_rib_computed_at_ = UTCTimestampUsec();
     if (config_options_.config_db_use_etcd) {
 #ifdef CONTRAIL_K8S_CONFIG
-        config_db_client_.reset(ConfigFactory::Create<ConfigEtcdClient>
+        config_db_client_.reset(ConfigFactory::Create<ConfigK8sClient>
                                 (this, evm_, config_options_,
                                  thread_count_));
 #endif
@@ -242,7 +241,7 @@ void ConfigClientManager::PostShutdown() {
     // object uuid cache and uuid read request list.
     if (config_options_.config_db_use_etcd) {
 #ifdef CONTRAIL_K8S_CONFIG
-        config_db_client_.reset(ConfigFactory::Create<ConfigEtcdClient>
+        config_db_client_.reset(ConfigFactory::Create<ConfigK8sClient>
                                 (this, evm_, config_options_,
                                  thread_count_));
 #endif
@@ -287,7 +286,7 @@ bool ConfigClientManager::InitConfigClient() {
     if (config_options_.config_db_use_etcd) {
 #ifdef CONTRAIL_K8S_CONFIG
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-            "Config Client Mgr SM: Start ETCD Watcher");
+            "Config Client Mgr SM: Start K8S Watcher");
         config_db_client_->StartWatcher();
 #endif
     } else {

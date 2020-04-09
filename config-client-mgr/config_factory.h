@@ -19,8 +19,8 @@ using etcd::etcdql::EtcdIf;
 class ConfigAmqpChannel;
 class ConfigCassandraClient;
 class ConfigCassandraPartition;
-class ConfigEtcdClient;
-class ConfigEtcdPartition;
+class ConfigK8sClient;
+class ConfigK8sPartition;
 class ConfigClientManager;
 class ConfigJsonParserBase;
 struct ConfigClientOptions;
@@ -37,11 +37,11 @@ class ConfigFactory : public Factory<ConfigFactory> {
     FACTORY_TYPE_N7(ConfigFactory, CqlIf, EventManager *,
                     const std::vector<std::string> &, int, const std::string &,
                     const std::string &, bool, const std::string &);
-    FACTORY_TYPE_N4(ConfigFactory, ConfigEtcdClient, ConfigClientManager *,
+    FACTORY_TYPE_N4(ConfigFactory, ConfigK8sClient, ConfigClientManager *,
                     EventManager *, const ConfigClientOptions &,
                     int);
-    FACTORY_TYPE_N2(ConfigFactory, ConfigEtcdPartition,
-                    ConfigEtcdClient *, size_t);
+    FACTORY_TYPE_N2(ConfigFactory, ConfigK8sPartition,
+                    ConfigK8sClient *, size_t);
     FACTORY_TYPE_N3(ConfigFactory, EtcdIf,
                     const std::vector<std::string> &,
                     const int, bool);

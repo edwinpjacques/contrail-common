@@ -21,9 +21,9 @@ env.Append(LIBPATH = env['TOP'] + '/xml')
 env.Append(LIBPATH = env['TOP'] + '/xmpp')
 env.Append(LIBPATH = env['TOP'] + '/schema')
 
-etcd_incl = os.environ.get('CONTRAIL_K8S_CONFIG');
+k8s_incl = os.environ.get('CONTRAIL_K8S_CONFIG');
 
-if etcd_incl:
+if k8s_incl:
     env.Prepend(LIBS = [ 'etcdql', 'protobuf', 'grpc++', 'grpc', 'z' ])
 
 env.Prepend(LIBS = [ 'config_client_mgr', 'peer_sandesh', 'sandesh', 'http', 'http_parser', 'httpc',

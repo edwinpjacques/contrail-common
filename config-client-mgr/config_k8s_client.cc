@@ -42,111 +42,121 @@ using contrail::regex;
 using contrail::regex_match;
 using contrail::regex_search;
 using namespace std;
-using etcd::etcdql::EtcdIf;
-using etcd::etcdql::EtcdResponse;
-using contrail_rapidjson::Value;
 using contrail_rapidjson::Document;
 using contrail_rapidjson::SizeType;
 using contrail_rapidjson::StringBuffer;
+using contrail_rapidjson::Value;
 using contrail_rapidjson::Writer;
+using etcd::etcdql::EtcdIf;
+using etcd::etcdql::EtcdResponse;
 
-bool ConfigEtcdClient::disable_watch_;
+bool ConfigK8sClient::disable_watch_;
 
 /**
-  * ETCD Watcher class to enable watching for any changes
+  * K8S Watcher class to enable watching for any changes
   * to config.
-  * Invokes etcd::Watch() which watches the ETCD server for
+  * Invokes etcd::Watch() which watches the K8S server for
   * any changes and invokes provided callback when a change
   * is detected.
   */
-class ConfigEtcdClient::EtcdWatcher : public Task {
+class ConfigK8sClient::K8sWatcher : public Task
+{
 public:
-    EtcdWatcher(ConfigEtcdClient *etcd_client) :
-        Task(TaskScheduler::GetInstance()->GetTaskId("etcd::EtcdWatcher")),
-        etcd_client_(etcd_client) {
+    K8sWatcher(ConfigK8sClient *k8s_client) : Task(TaskScheduler::GetInstance()->GetTaskId("k8s::K8sWatcher")),
+                                                k8s_client_(k8s_client)
+    {
     }
 
     virtual bool Run();
 
-    ConfigEtcdClient *client() const {
-        return etcd_client_;
+    ConfigK8sClient *client() const
+    {
+        return k8s_client_;
     }
-    string Description() const {
-        return "ConfigEtcdClient::EtcdWatcher";
+    string Description() const
+    {
+        return "ConfigK8sClient::K8sWatcher";
     }
 
 private:
-    ConfigEtcdClient *etcd_client_;
+    ConfigK8sClient *k8s_client_;
     void ProcessResponse(EtcdResponse resp);
 };
 
-ConfigEtcdClient::ConfigEtcdClient(ConfigClientManager *mgr,
-                                   EventManager *evm,
-                                   const ConfigClientOptions &options,
-                                   int num_workers)
-                 : ConfigDbClient(mgr, evm, options),
-                   num_workers_(num_workers)
+ConfigK8sClient::ConfigK8sClient(ConfigClientManager *mgr,
+                                 EventManager *evm,
+                                 const ConfigClientOptions &options,
+                                 int num_workers)
+    : ConfigDbClient(mgr, evm, options),
+      num_workers_(num_workers)
 {
     eqlif_.reset(ConfigFactory::Create<EtcdIf>(config_db_ips(),
-                                              GetFirstConfigDbPort(),
-                                              false));
+                                               GetFirstConfigDbPort(),
+                                               false));
 
     InitConnectionInfo();
     bulk_sync_status_ = 0;
 
-    for (int i = 0; i < num_workers_; i++) {
+    for (int i = 0; i < num_workers_; i++)
+    {
         partitions_.push_back(
-            ConfigFactory::Create<ConfigEtcdPartition>(this, i));
+            ConfigFactory::Create<ConfigK8sPartition>(this, i));
     }
 
-    uuid_reader_.reset(new
-        TaskTrigger(boost::bind(&ConfigEtcdClient::UUIDReader, this),
-        TaskScheduler::GetInstance()->GetTaskId("config_client::DBReader"),
-        0));
+    uuid_reader_.reset(new TaskTrigger(boost::bind(&ConfigK8sClient::UUIDReader, this),
+                                       TaskScheduler::GetInstance()->GetTaskId("config_client::DBReader"),
+                                       0));
 }
 
-ConfigEtcdClient::~ConfigEtcdClient() {
+ConfigK8sClient::~ConfigK8sClient()
+{
     STLDeleteValues(&partitions_);
 }
 
-void ConfigEtcdClient::StartWatcher() {
-    if (disable_watch_)  {
+void ConfigK8sClient::StartWatcher()
+{
+    if (disable_watch_)
+    {
         CONFIG_CLIENT_DEBUG(
             ConfigClientMgrDebug,
-            "ETCD Watcher SM: StartWatcher: ETCD watch disabled");
+            "K8S Watcher SM: StartWatcher: K8S watch disabled");
         return;
     }
 
     /**
-      * If reinit is triggerred, Don't start the ETCD watcher.
+      * If reinit is triggerred, Don't start the K8S watcher.
       */
-    if (mgr()->is_reinit_triggered()) {
+    if (mgr()->is_reinit_triggered())
+    {
         CONFIG_CLIENT_DEBUG(
             ConfigClientMgrDebug,
-            "ETCD Watcher SM: StartWatcher: re init triggered,"
-            " don't enqueue ETCD Watcher Task.");
+            "K8S Watcher SM: StartWatcher: re init triggered,"
+            " don't enqueue K8S Watcher Task.");
         return;
     }
 
     TaskScheduler *scheduler = TaskScheduler::GetInstance();
-    Task *task = new EtcdWatcher(this);
+    Task *task = new K8sWatcher(this);
     scheduler->Enqueue(task);
 }
 
-void ConfigEtcdClient::EtcdWatcher::ProcessResponse(
-                                         EtcdResponse resp) {
+void ConfigK8sClient::K8sWatcher::ProcessResponse(
+    EtcdResponse resp)
+{
     client()->ProcessResponse(resp);
 }
 
-bool ConfigEtcdClient::EtcdWatcher::Run() {
+bool ConfigK8sClient::K8sWatcher::Run()
+{
     /**
       * If reinit is triggerred, don't wait for end of config
       * trigger. Return from here to process reinit.
       */
-    if (etcd_client_->mgr()->is_reinit_triggered()) {
+    if (k8s_client_->mgr()->is_reinit_triggered())
+    {
         CONFIG_CLIENT_DEBUG(
             ConfigClientMgrDebug,
-            "ETCD Watcher SM: Run: re init triggered,"
+            "K8S Watcher SM: Run: re init triggered,"
             " don't wait for end of config");
         return true;
     }
@@ -155,21 +165,23 @@ bool ConfigEtcdClient::EtcdWatcher::Run() {
       * Invoke etcd client library to watch for changes.
       */
     client()->eqlif_->Watch("/contrail/",
-            boost::bind(&ConfigEtcdClient::EtcdWatcher::ProcessResponse,
-                        this, _1));
+                            boost::bind(&ConfigK8sClient::K8sWatcher::ProcessResponse,
+                                        this, _1));
 
     return true;
 }
 
-void ConfigEtcdClient::ProcessResponse(EtcdResponse resp) {
+void ConfigK8sClient::ProcessResponse(EtcdResponse resp)
+{
     /**
       * If reinit is triggerred, don't consume the message.
       * Also, stop etcd watch.
       */
-    if (mgr()->is_reinit_triggered()) {
+    if (mgr()->is_reinit_triggered())
+    {
         CONFIG_CLIENT_DEBUG(
             ConfigClientMgrDebug,
-            "ETCD Watcher SM: ProcessResponse: re init triggered,"
+            "K8S Watcher SM: ProcessResponse: re init triggered,"
             " stop watching");
         eqlif_->StopWatch();
         return;
@@ -187,115 +199,141 @@ void ConfigEtcdClient::ProcessResponse(EtcdResponse resp) {
       */
     assert(resp.err_code() == 0);
 
-    if (resp.action() == 0) {
+    if (resp.action() == 0)
+    {
         EnqueueUUIDRequest("CREATE", resp.key(), resp.value());
-    } else if (resp.action() == 1) {
+    }
+    else if (resp.action() == 1)
+    {
         EnqueueUUIDRequest("UPDATE", resp.key(), resp.value());
-    } else if (resp.action() == 2) {
+    }
+    else if (resp.action() == 2)
+    {
         EnqueueUUIDRequest("DELETE", resp.key(), resp.value());
     }
 }
 
-void ConfigEtcdClient::InitDatabase() {
-    HandleEtcdConnectionStatus(false, true);
-    while (true) {
-        CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug, "ETCD SM: Db Init");
-        if (!eqlif_->Connect()) {
+void ConfigK8sClient::InitDatabase()
+{
+    HandleK8sConnectionStatus(false, true);
+    while (true)
+    {
+        CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug, "K8S SM: Db Init");
+        if (!eqlif_->Connect())
+        {
             CONFIG_CLIENT_DEBUG(ConfigEtcdInitErrorMessage,
                                 "Database initialization failed");
-            if (!InitRetry()) return;
+            if (!InitRetry())
+                return;
             continue;
         }
         break;
     }
-    HandleEtcdConnectionStatus(true);
+    HandleK8sConnectionStatus(true);
     BulkDataSync();
 }
 
-void ConfigEtcdClient::HandleEtcdConnectionStatus(bool success,
-                                                  bool force_update) {
+void ConfigK8sClient::HandleK8sConnectionStatus(bool success,
+                                                bool force_update)
+{
     UpdateConnectionInfo(success, force_update);
 
-    if (success) {
+    if (success)
+    {
         // Update connection info
         process::ConnectionState::GetInstance()->Update(
-            process::ConnectionType::DATABASE, "Etcd",
+            process::ConnectionType::DATABASE, "K8S",
             process::ConnectionStatus::UP,
-            eqlif_->endpoints(), "Established ETCD connection");
-       CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-                           "ETCD SM: Established ETCD connection");
-    } else {
+            eqlif_->endpoints(), "Established K8S connection");
+        CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
+                            "K8S SM: Established K8S connection");
+    }
+    else
+    {
         process::ConnectionState::GetInstance()->Update(
-            process::ConnectionType::DATABASE, "Etcd",
+            process::ConnectionType::DATABASE, "K8S",
             process::ConnectionStatus::DOWN,
-            eqlif_->endpoints(), "Lost ETCD connection");
-       CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-                           "ETCD SM: Lost ETCD connection");
+            eqlif_->endpoints(), "Lost K8S connection");
+        CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
+                            "K8S SM: Lost K8S connection");
     }
 }
 
-bool ConfigEtcdClient::InitRetry() {
-    CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug, "ETCD SM: DB Init Retry");
+bool ConfigK8sClient::InitRetry()
+{
+    CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug, "K8S SM: DB Init Retry");
     // If reinit is triggered, return false to abort connection attempt
-    if (mgr()->is_reinit_triggered()) return false;
+    if (mgr()->is_reinit_triggered())
+        return false;
     usleep(GetInitRetryTimeUSec());
     return true;
 }
 
-bool ConfigEtcdClient::BulkDataSync() {
+bool ConfigK8sClient::BulkDataSync()
+{
     CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-                        "ETCD SM: BulkDataSync Started");
+                        "K8S SM: BulkDataSync Started");
     bulk_sync_status_ = num_workers_;
     uuid_reader_->Set();
     return true;
 }
 
-void ConfigEtcdClient::BulkSyncDone() {
+void ConfigK8sClient::BulkSyncDone()
+{
     long num_config_readers_still_processing =
         bulk_sync_status_.fetch_and_decrement();
-    if (num_config_readers_still_processing == 1) {
+    if (num_config_readers_still_processing == 1)
+    {
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-                            "ETCD SM: BulkSyncDone by all readers");
+                            "K8S SM: BulkSyncDone by all readers");
         mgr()->EndOfConfig();
-    } else {
+    }
+    else
+    {
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-                            "ETCD SM: One reader finished BulkSync");
+                            "K8S SM: One reader finished BulkSync");
     }
 }
 
-void ConfigEtcdClient::PostShutdown() {
+void ConfigK8sClient::PostShutdown()
+{
     CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-                        "ETCD SM: Post shutdown during re-init");
+                        "K8S SM: Post shutdown during re-init");
     STLDeleteValues(&partitions_);
     ClearFQNameCache();
 }
 
-ConfigEtcdPartition *
-ConfigEtcdClient::GetPartition(const string &uuid) {
+ConfigK8sPartition *
+ConfigK8sClient::GetPartition(const string &uuid)
+{
     int worker_id = HashUUID(uuid);
     return partitions_[worker_id];
 }
 
-const ConfigEtcdPartition *
-ConfigEtcdClient::GetPartition(const string &uuid) const {
+const ConfigK8sPartition *
+ConfigK8sClient::GetPartition(const string &uuid) const
+{
     int worker_id = HashUUID(uuid);
     return partitions_[worker_id];
 }
 
-const ConfigEtcdPartition *
-ConfigEtcdClient::GetPartition(int worker_id) const {
+const ConfigK8sPartition *
+ConfigK8sClient::GetPartition(int worker_id) const
+{
     assert(worker_id < num_workers_);
     return partitions_[worker_id];
 }
 
-int ConfigEtcdClient::HashUUID(const string &uuid_str) const {
+int ConfigK8sClient::HashUUID(const string &uuid_str) const
+{
     boost::hash<string> string_hash;
     return string_hash(uuid_str) % num_workers_;
 }
 
-void ConfigEtcdClient::EnqueueUUIDRequest(string oper,
-                                          string uuid,
-                                          string value) {
+void ConfigK8sClient::EnqueueUUIDRequest(string oper,
+                                         string uuid,
+                                         string value)
+{
     /**
       * uuid contains the entire config path
       * For instance /contrail/virtual_network/<uuid>
@@ -315,25 +353,26 @@ void ConfigEtcdClient::EnqueueUUIDRequest(string oper,
     string uuid_key = uuid.substr(front_pos + 1);
 
     // Cache uses the trimmed uuid
-    if (oper == "CREATE" || oper == "UPDATE") {
-
+    if (oper == "CREATE" || oper == "UPDATE")
+    {
         Document d;
         d.Parse<0>(value.c_str());
         Document::AllocatorType &a = d.GetAllocator();
 
         // If non-object JSON is received, log a warning and return.
-        if (!d.IsObject()) {
-            CONFIG_CLIENT_WARN(ConfigClientMgrWarning, "ETCD SM: Received "
-                  "non-object json. uuid: "
-                  + uuid_key + " value: "
-                  + value + " .Skipping");
+        if (!d.IsObject())
+        {
+            CONFIG_CLIENT_WARN(ConfigClientMgrWarning, "K8S SM: Received "
+                                                       "non-object json. uuid: " +
+                                                       uuid_key + " value: " + value + " .Skipping");
             return;
         }
 
-        // ETCD does not provide obj-type since it is encoded in the
+        // K8S does not provide obj-type since it is encoded in the
         // UUID key. Since config_json_parser and IFMap need type to be
         // present in the document, fix up by adding obj-type.
-        if (!d.HasMember("type")) {
+        if (!d.HasMember("type"))
+        {
             string type = uuid.substr(10, front_pos - 10);
             Value v;
             Value va;
@@ -347,21 +386,26 @@ void ConfigEtcdClient::EnqueueUUIDRequest(string oper,
 
         // Add to FQName cache if not present
         if (d.HasMember("type") &&
-            d.HasMember("fq_name")) {
+            d.HasMember("fq_name"))
+        {
             string obj_type = d["type"].GetString();
             string fq_name;
             const Value &name = d["fq_name"];
             for (Value::ConstValueIterator name_itr = name.Begin();
-                 name_itr != name.End(); ++name_itr) {
+                 name_itr != name.End(); ++name_itr)
+            {
                 fq_name += name_itr->GetString();
                 fq_name += ":";
             }
-            fq_name.erase(fq_name.end()-1);
-            if (FindFQName(uuid_key) == "ERROR") {
+            fq_name.erase(fq_name.end() - 1);
+            if (FindFQName(uuid_key) == "ERROR")
+            {
                 AddFQNameCache(uuid_key, obj_type, fq_name);
             }
         }
-    } else if (oper == "DELETE") {
+    }
+    else if (oper == "DELETE")
+    {
         // Invalidate cache
         InvalidateFQNameCache(uuid_key);
     }
@@ -375,15 +419,18 @@ void ConfigEtcdClient::EnqueueUUIDRequest(string oper,
     GetPartition(uuid_key)->Enqueue(req);
 }
 
-void ConfigEtcdClient::EnqueueDBSyncRequest(
-         const UUIDValueList &uuid_list) {
+void ConfigK8sClient::EnqueueDBSyncRequest(
+    const UUIDValueList &uuid_list)
+{
     for (UUIDValueList::const_iterator it = uuid_list.begin();
-        it != uuid_list.end(); it++) {
+         it != uuid_list.end(); it++)
+    {
         EnqueueUUIDRequest("CREATE", it->first, it->second);
     }
 }
 
-bool ConfigEtcdClient::UUIDReader() {
+bool ConfigK8sClient::UUIDReader()
+{
 
     string next_key;
     string prefix = "/contrail/";
@@ -394,22 +441,25 @@ bool ConfigEtcdClient::UUIDReader() {
     for (ConfigClientManager::ObjectTypeList::const_iterator it =
              mgr()->config_json_parser()->ObjectTypeListToRead().begin();
          it != mgr()->config_json_parser()->ObjectTypeListToRead().end();
-         it++) {
+         it++)
+    {
 
         /* Form the key for the object type to lookup */
         next_key = prefix + it->c_str();
         os.str("");
         os << next_key << 1;
 
-        while (true) {
+        while (true)
+        {
             unsigned int num_entries;
 
             /**
               * Ensure that UUIDReader task aborts on reinit trigger.
               */
-            if (mgr()->is_reinit_triggered()) {
+            if (mgr()->is_reinit_triggered())
+            {
                 CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-                "ETCD SM: Abort UUID reader on reinit trigger");
+                                    "K8S SM: Abort UUID reader on reinit trigger");
                 return true;
             }
 
@@ -429,7 +479,8 @@ bool ConfigEtcdClient::UUIDReader() {
             /**
               * Process read response
               */
-            if (resp.err_code() == 0) {
+            if (resp.err_code() == 0)
+            {
                 /**
                   * Got UUID data for given ObjType
                   */
@@ -437,18 +488,21 @@ bool ConfigEtcdClient::UUIDReader() {
 
                 for (multimap<string, string>::const_iterator iter = kvs.begin();
                      iter != kvs.end();
-                     ++iter) {
-                     /**
+                     ++iter)
+                {
+                    /**
                        * Parse the json string to get uuid and value
                        */
-                     next_key = iter->first;
-                     if (!boost::starts_with(next_key, "/contrail/")) {
-                         CONFIG_CLIENT_WARN(ConfigClientMgrWarning,
-                              "ETCD SM: Non-contrail uuid: "
-                              + next_key + " received");
-                     } else {
-                         uuid_list.push_back(make_pair(iter->first, iter->second));
-                     }
+                    next_key = iter->first;
+                    if (!boost::starts_with(next_key, "/contrail/"))
+                    {
+                        CONFIG_CLIENT_WARN(ConfigClientMgrWarning,
+                                           "K8S SM: Non-contrail uuid: " + next_key + " received");
+                    }
+                    else
+                    {
+                        uuid_list.push_back(make_pair(iter->first, iter->second));
+                    }
                 }
 
                 /**
@@ -467,34 +521,43 @@ bool ConfigEtcdClient::UUIDReader() {
                   * no more entries for current obj-type. We move to next
                   * obj-type.
                   */
-                if (kvs.size() < num_entries) {
+                if (kvs.size() < num_entries)
+                {
                     break;
                 }
-            } else if (resp.err_code() == 100)  {
+            }
+            else if (resp.err_code() == 100)
+            {
                 /**
                   * ObjType not found. Continue reading next ObjType
                   */
                 break;
-            } else if (resp.err_code() == -1) {
+            }
+            else if (resp.err_code() == -1)
+            {
                 /* Test ONLY */
                 read_done = true;
                 break;
-            } else {
+            }
+            else
+            {
                 /**
                   * RPC failure. Connection down.
                   * Retry after a while
                   */
-                HandleEtcdConnectionStatus(false);
+                HandleK8sConnectionStatus(false);
                 usleep(GetInitRetryTimeUSec());
             }
         } //while
-        if (read_done) {
+        if (read_done)
+        {
             break;
         }
     } //for
 
     // At the end of task trigger
-    BOOST_FOREACH(ConfigEtcdPartition *partition, partitions_) {
+    BOOST_FOREACH (ConfigK8sPartition *partition, partitions_)
+    {
         ObjectProcessReq *req = new ObjectProcessReq("EndOfConfig", "", "");
         partition->Enqueue(req);
     }
@@ -502,9 +565,11 @@ bool ConfigEtcdClient::UUIDReader() {
     return true;
 }
 
-bool ConfigEtcdClient::IsTaskTriggered() const {
+bool ConfigK8sClient::IsTaskTriggered() const
+{
     // If UUIDReader task has been triggered return true.
-    if (uuid_reader_->IsSet()) {
+    if (uuid_reader_->IsSet())
+    {
         return true;
     }
 
@@ -512,52 +577,59 @@ bool ConfigEtcdClient::IsTaskTriggered() const {
       * Walk the partitions and check if ConfigReader task has
       * been triggered in any of them. If so, return true.
       */
-    BOOST_FOREACH(ConfigEtcdPartition *partition, partitions_) {
-        if (partition->IsTaskTriggered()) {
+    BOOST_FOREACH (ConfigK8sPartition *partition, partitions_)
+    {
+        if (partition->IsTaskTriggered())
+        {
             return true;
         }
     }
     return false;
 }
 
-bool ConfigEtcdClient::UUIDToObjCacheShow(
-                           const string &search_string,
-                           int inst_num,
-                           const string &last_uuid,
-                           uint32_t num_entries,
-                           vector<ConfigDBUUIDCacheEntry> *entries) const {
-   return GetPartition(inst_num)->UUIDToObjCacheShow(search_string, last_uuid,
-                                                     num_entries, entries);
+bool ConfigK8sClient::UUIDToObjCacheShow(
+    const string &search_string,
+    int inst_num,
+    const string &last_uuid,
+    uint32_t num_entries,
+    vector<ConfigDBUUIDCacheEntry> *entries) const
+{
+    return GetPartition(inst_num)->UUIDToObjCacheShow(search_string, last_uuid,
+                                                      num_entries, entries);
 }
 
-bool ConfigEtcdClient::IsListOrMapPropEmpty(const string &uuid_key,
-                                            const string &lookup_key) {
+bool ConfigK8sClient::IsListOrMapPropEmpty(const string &uuid_key,
+                                           const string &lookup_key)
+{
     return GetPartition(uuid_key)->IsListOrMapPropEmpty(uuid_key, lookup_key);
 }
 
-ConfigEtcdPartition::ConfigEtcdPartition(
-                   ConfigEtcdClient *client, size_t idx)
-    : config_client_(client), worker_id_(idx) {
+ConfigK8sPartition::ConfigK8sPartition(
+    ConfigK8sClient *client, size_t idx)
+    : config_client_(client), worker_id_(idx)
+{
     int task_id = TaskScheduler::GetInstance()->GetTaskId("config_client::Reader");
-    config_reader_.reset(new
-     TaskTrigger(boost::bind(&ConfigEtcdPartition::ConfigReader, this),
-     task_id, worker_id_));
+    config_reader_.reset(new TaskTrigger(boost::bind(&ConfigK8sPartition::ConfigReader, this),
+                                         task_id, worker_id_));
     task_id =
         TaskScheduler::GetInstance()->GetTaskId("config_client::ObjectProcessor");
     obj_process_request_queue_.reset(new WorkQueue<ObjectProcessReq *>(
-        task_id, worker_id_, bind(&ConfigEtcdPartition::ObjectProcessReqHandler, this, _1),
+        task_id, worker_id_, bind(&ConfigK8sPartition::ObjectProcessReqHandler, this, _1),
         WorkQueue<ObjectProcessReq *>::kMaxSize, 512));
 }
 
-ConfigEtcdPartition::~ConfigEtcdPartition() {
+ConfigK8sPartition::~ConfigK8sPartition()
+{
     obj_process_request_queue_->Shutdown();
 }
 
-void ConfigEtcdPartition::Enqueue(ObjectProcessReq *req) {
+void ConfigK8sPartition::Enqueue(ObjectProcessReq *req)
+{
     obj_process_request_queue_->Enqueue(req);
 }
 
-bool ConfigEtcdPartition::ObjectProcessReqHandler(ObjectProcessReq *req) {
+bool ConfigK8sPartition::ObjectProcessReqHandler(ObjectProcessReq *req)
+{
     AddUUIDToProcessRequestMap(req->oper_, req->uuid_str_, req->value_);
     delete req;
     return true;
@@ -566,9 +638,10 @@ bool ConfigEtcdPartition::ObjectProcessReqHandler(ObjectProcessReq *req) {
 /**
   * Add the UUID key/value pair to the process list.
   */
-void ConfigEtcdPartition::AddUUIDToProcessRequestMap(const string &oper,
-                                                     const string &uuid_key,
-                                                     const string &value_str) {
+void ConfigK8sPartition::AddUUIDToProcessRequestMap(const string &oper,
+                                                    const string &uuid_key,
+                                                    const string &value_str)
+{
     pair<UUIDProcessRequestMap::iterator, bool> ret;
     bool trigger = uuid_process_request_map_.empty();
 
@@ -581,16 +654,20 @@ void ConfigEtcdPartition::AddUUIDToProcessRequestMap(const string &oper,
     boost::shared_ptr<UUIDProcessRequestType> req(
         new UUIDProcessRequestType(oper, uuid, value_str));
     ret = uuid_process_request_map_.insert(make_pair(client()->GetUUID(uuid), req));
-    if (ret.second) {
+    if (ret.second)
+    {
         /**
           * UUID not present in uuid_process_request_map_.
           * If uuid_process_request_map_ is empty, trigger config_reader_
           * to process the uuids.
           */
-        if (trigger) {
+        if (trigger)
+        {
             config_reader_->Set();
         }
-    } else {
+    }
+    else
+    {
         /**
           * UUID already present in uuid_process_request_map_. If operation is
           * DELETE preceeded by CREATE, remove from uuid_process_request_map_.
@@ -598,10 +675,13 @@ void ConfigEtcdPartition::AddUUIDToProcessRequestMap(const string &oper,
           * new value and oper.
           */
         if ((oper == "DELETE") &&
-            (ret.first->second->oper == "CREATE")) {
+            (ret.first->second->oper == "CREATE"))
+        {
             uuid_process_request_map_.erase(ret.first);
             client()->PurgeFQNameCache(uuid);
-        } else {
+        }
+        else
+        {
             // Replace the entry that was found in the map
             req.reset();
             ret.first->second->oper = oper;
@@ -611,33 +691,38 @@ void ConfigEtcdPartition::AddUUIDToProcessRequestMap(const string &oper,
     }
 }
 
-ConfigEtcdPartition::UUIDCacheEntry::~UUIDCacheEntry() {
+ConfigK8sPartition::UUIDCacheEntry::~UUIDCacheEntry()
+{
 }
 
-void ConfigEtcdPartition::FillUUIDToObjCacheInfo(const string &uuid,
-                                  UUIDCacheMap::const_iterator uuid_iter,
-                                  ConfigDBUUIDCacheEntry *entry) const {
+void ConfigK8sPartition::FillUUIDToObjCacheInfo(const string &uuid,
+                                                UUIDCacheMap::const_iterator uuid_iter,
+                                                ConfigDBUUIDCacheEntry *entry) const
+{
     entry->set_uuid(uuid);
     entry->set_timestamp(
-            UTCUsecToString(uuid_iter->second->GetLastReadTimeStamp()));
+        UTCUsecToString(uuid_iter->second->GetLastReadTimeStamp()));
     entry->set_fq_name(uuid_iter->second->GetFQName());
     entry->set_obj_type(uuid_iter->second->GetObjType());
     entry->set_json_str(uuid_iter->second->GetJsonString());
 }
 
-bool ConfigEtcdPartition::UUIDToObjCacheShow(
-                      const string &search_string,
-                      const string &last_uuid,
-                      uint32_t num_entries,
-                      vector<ConfigDBUUIDCacheEntry> *entries) const {
+bool ConfigK8sPartition::UUIDToObjCacheShow(
+    const string &search_string,
+    const string &last_uuid,
+    uint32_t num_entries,
+    vector<ConfigDBUUIDCacheEntry> *entries) const
+{
     uint32_t count = 0;
     regex search_expr(search_string);
     for (UUIDCacheMap::const_iterator it =
-        uuid_cache_map_.upper_bound(last_uuid);
-        count < num_entries && it != uuid_cache_map_.end(); it++) {
+             uuid_cache_map_.upper_bound(last_uuid);
+         count < num_entries && it != uuid_cache_map_.end(); it++)
+    {
         if (regex_search(it->first, search_expr) ||
-                regex_search(it->second->GetObjType(), search_expr) ||
-                regex_search(it->second->GetFQName(), search_expr)) {
+            regex_search(it->second->GetObjType(), search_expr) ||
+            regex_search(it->second->GetFQName(), search_expr))
+        {
             count++;
             ConfigDBUUIDCacheEntry entry;
             FillUUIDToObjCacheInfo(it->first, it, &entry);
@@ -647,21 +732,25 @@ bool ConfigEtcdPartition::UUIDToObjCacheShow(
     return true;
 }
 
-ConfigEtcdPartition::UUIDCacheEntry *
-ConfigEtcdPartition::GetUUIDCacheEntry(const string &uuid) {
+ConfigK8sPartition::UUIDCacheEntry *
+ConfigK8sPartition::GetUUIDCacheEntry(const string &uuid)
+{
     UUIDCacheMap::iterator uuid_iter = uuid_cache_map_.find(uuid);
-    if (uuid_iter == uuid_cache_map_.end()) {
+    if (uuid_iter == uuid_cache_map_.end())
+    {
         return NULL;
     }
     return uuid_iter->second;
 }
 
-ConfigEtcdPartition::UUIDCacheEntry *
-ConfigEtcdPartition::GetUUIDCacheEntry(const string &uuid,
-                                       const string &value,
-                                       bool &is_new) {
+ConfigK8sPartition::UUIDCacheEntry *
+ConfigK8sPartition::GetUUIDCacheEntry(const string &uuid,
+                                      const string &value,
+                                      bool &is_new)
+{
     UUIDCacheMap::iterator uuid_iter = uuid_cache_map_.find(uuid);
-    if (uuid_iter == uuid_cache_map_.end()) {
+    if (uuid_iter == uuid_cache_map_.end())
+    {
         /**
           * Cache entry not present. Create one.
           */
@@ -683,7 +772,9 @@ ConfigEtcdPartition::GetUUIDCacheEntry(const string &uuid,
           * newly created.
           */
         is_new = true;
-    } else {
+    }
+    else
+    {
         /**
           * Cache entry already present. Update LastReadTimestamp.
           */
@@ -696,90 +787,99 @@ ConfigEtcdPartition::GetUUIDCacheEntry(const string &uuid,
     return uuid_iter->second;
 }
 
-int ConfigEtcdPartition::UUIDRetryTimeInMSec(
-        const UUIDCacheEntry *obj) const {
+int ConfigK8sPartition::UUIDRetryTimeInMSec(
+    const UUIDCacheEntry *obj) const
+{
     uint32_t retry_time_pow_of_two =
-        obj->GetRetryCount() > kMaxUUIDRetryTimePowOfTwo ?
-        kMaxUUIDRetryTimePowOfTwo : obj->GetRetryCount();
-   return ((1 << retry_time_pow_of_two) * kMinUUIDRetryTimeMSec);
+        obj->GetRetryCount() > kMaxUUIDRetryTimePowOfTwo ? kMaxUUIDRetryTimePowOfTwo : obj->GetRetryCount();
+    return ((1 << retry_time_pow_of_two) * kMinUUIDRetryTimeMSec);
 }
 
-void ConfigEtcdPartition::UUIDCacheEntry::EnableEtcdReadRetry(
-        const string uuid,
-        const string value) {
-    if (!retry_timer_) {
+void ConfigK8sPartition::UUIDCacheEntry::EnableK8sReadRetry(
+    const string uuid,
+    const string value)
+{
+    if (!retry_timer_)
+    {
         retry_timer_ = TimerManager::CreateTimer(
-                *parent_->client()->event_manager()->io_service(),
-                "UUID retry timer for " + uuid,
-                TaskScheduler::GetInstance()->GetTaskId(
-                                "config_client::Reader"),
-                parent_->worker_id_);
+            *parent_->client()->event_manager()->io_service(),
+            "UUID retry timer for " + uuid,
+            TaskScheduler::GetInstance()->GetTaskId(
+                "config_client::Reader"),
+            parent_->worker_id_);
         CONFIG_CLIENT_DEBUG(ConfigClientReadRetry,
-                "Created UUID read retry timer ", uuid);
+                            "Created UUID read retry timer ", uuid);
     }
     retry_timer_->Cancel();
     retry_timer_->Start(parent_->UUIDRetryTimeInMSec(this),
-            boost::bind(
-                &ConfigEtcdPartition::UUIDCacheEntry::EtcdReadRetryTimerExpired,
-                this, uuid, value),
-            boost::bind(
-                &ConfigEtcdPartition::UUIDCacheEntry::EtcdReadRetryTimerErrorHandler,
-                this));
+                        boost::bind(
+                            &ConfigK8sPartition::UUIDCacheEntry::K8sReadRetryTimerExpired,
+                            this, uuid, value),
+                        boost::bind(
+                            &ConfigK8sPartition::UUIDCacheEntry::K8sReadRetryTimerErrorHandler,
+                            this));
     CONFIG_CLIENT_DEBUG(ConfigClientReadRetry,
-            "Start/restart UUID Read Retry timer due to configuration", uuid);
+                        "Start/restart UUID Read Retry timer due to configuration", uuid);
 }
 
-void ConfigEtcdPartition::UUIDCacheEntry::DisableEtcdReadRetry(
-        const string uuid) {
+void ConfigK8sPartition::UUIDCacheEntry::DisableK8sReadRetry(
+    const string uuid)
+{
     CHECK_CONCURRENCY("config_client::Reader");
-    if (retry_timer_) {
+    if (retry_timer_)
+    {
         retry_timer_->Cancel();
         TimerManager::DeleteTimer(retry_timer_);
         retry_timer_ = NULL;
         retry_count_ = 0;
         CONFIG_CLIENT_DEBUG(ConfigClientReadRetry,
-                "UUID Read retry timer - deleted timer due to configuration",
-                uuid);
+                            "UUID Read retry timer - deleted timer due to configuration",
+                            uuid);
     }
 }
 
-bool ConfigEtcdPartition::UUIDCacheEntry::IsRetryTimerRunning() const {
+bool ConfigK8sPartition::UUIDCacheEntry::IsRetryTimerRunning() const
+{
     if (retry_timer_)
         return (retry_timer_->running());
     return false;
 }
 
-bool ConfigEtcdPartition::UUIDCacheEntry::EtcdReadRetryTimerExpired(
-        const string uuid,
-        const string value) {
+bool ConfigK8sPartition::UUIDCacheEntry::K8sReadRetryTimerExpired(
+    const string uuid,
+    const string value)
+{
     CHECK_CONCURRENCY("config_client::Reader");
     parent_->client()->EnqueueUUIDRequest(
-            "UPDATE", parent_->client()->uuid_str(uuid), value);
+        "UPDATE", parent_->client()->uuid_str(uuid), value);
     retry_count_++;
     CONFIG_CLIENT_DEBUG(ConfigClientReadRetry, "timer expired ", uuid);
     return false;
 }
 
-void
-ConfigEtcdPartition::UUIDCacheEntry::EtcdReadRetryTimerErrorHandler() {
-     std::string message = "Timer";
-     CONFIG_CLIENT_WARN(ConfigClientGetRowError,
-            "UUID Read Retry Timer error ", message, message);
+void ConfigK8sPartition::UUIDCacheEntry::K8sReadRetryTimerErrorHandler()
+{
+    std::string message = "Timer";
+    CONFIG_CLIENT_WARN(ConfigClientGetRowError,
+                       "UUID Read Retry Timer error ", message, message);
 }
 
-bool ConfigEtcdPartition::UUIDCacheEntry::ListOrMapPropEmpty(
-         const string &prop) const {
+bool ConfigK8sPartition::UUIDCacheEntry::ListOrMapPropEmpty(
+    const string &prop) const
+{
     PropEmptyMap::const_iterator it = prop_empty_map_.find(prop);
-    if (it == prop_empty_map_.end()) {
+    if (it == prop_empty_map_.end())
+    {
         return true;
     }
     return (it->second == false);
 }
 
-bool ConfigEtcdPartition::GenerateAndPushJson(const string &uuid,
-                                              Document &doc,
-                                              bool add_change,
-                                              UUIDCacheEntry *cache) {
+bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
+                                             Document &doc,
+                                             bool add_change,
+                                             UUIDCacheEntry *cache)
+{
 
     // Get obj_type from cache.
     const string &obj_type = cache->GetObjType();
@@ -796,7 +896,8 @@ bool ConfigEtcdPartition::GenerateAndPushJson(const string &uuid,
     Value::ConstMemberIterator itr = doc.MemberBegin();
     Document::AllocatorType &a = doc.GetAllocator();
 
-    while (itr != doc.MemberEnd()) {
+    while (itr != doc.MemberEnd())
+    {
 
         string key = itr->name.GetString();
 
@@ -807,7 +908,8 @@ bool ConfigEtcdPartition::GenerateAndPushJson(const string &uuid,
          */
         if (!notify_update &&
             key.compare("type") != 0 &&
-            key.compare("fq_name") != 0) {
+            key.compare("fq_name") != 0)
+        {
             notify_update = true;
         }
 
@@ -817,7 +919,8 @@ bool ConfigEtcdPartition::GenerateAndPushJson(const string &uuid,
           *  such properties gives performance improvement.
           */
         if (ConfigClientManager::skip_properties.find(key) !=
-            ConfigClientManager::skip_properties.end()) {
+            ConfigClientManager::skip_properties.end())
+        {
             itr = doc.EraseMember(itr);
             continue;
         }
@@ -826,15 +929,16 @@ bool ConfigEtcdPartition::GenerateAndPushJson(const string &uuid,
           * Get the type string. This will be used as the key.
           * Also remove this field from the document.
           */
-        if (key.compare("type") == 0) {
+        if (key.compare("type") == 0)
+        {
             type_str = itr->value.GetString();
             itr = doc.EraseMember(itr);
             continue;
         }
 
-        string wrapper = client()->mgr()->config_json_parser()-> \
-                           GetWrapperFieldName(obj_type, key.c_str());
-        if (!wrapper.empty()) {
+        string wrapper = client()->mgr()->config_json_parser()->GetWrapperFieldName(obj_type, key.c_str());
+        if (!wrapper.empty())
+        {
 
             /**
               * Handle prop_map and prop_list objects.
@@ -852,8 +956,9 @@ bool ConfigEtcdPartition::GenerateAndPushJson(const string &uuid,
             // Indicate in cache if propm/propl is empty
             cache->SetListOrMapPropEmpty(key,
                                          map_value.IsNull());
-
-        } else if (key.compare("parent_type") == 0) {
+        }
+        else if (key.compare("parent_type") == 0)
+        {
 
             /**
               * Process parent_type. Need to change - to _.
@@ -861,27 +966,31 @@ bool ConfigEtcdPartition::GenerateAndPushJson(const string &uuid,
 
             string parent_type = doc[key.c_str()].GetString();
             replace(parent_type.begin(), parent_type.end(),
-                   '-', '_');
+                    '-', '_');
             doc[key.c_str()].SetString(parent_type.c_str(), a);
-
-        } else if (key.compare("parent_uuid") == 0) {
+        }
+        else if (key.compare("parent_uuid") == 0)
+        {
 
             /**
               * Process parent_uuid. For creates/updates, check if
               * parent fq_name is present. If not, enable retry.
               */
 
-            if (add_change) {
+            if (add_change)
+            {
                 string parent_uuid = doc[key.c_str()].GetString();
                 string parent_fq_name = client()->FindFQName(parent_uuid);
-                if (parent_fq_name == "ERROR") {
+                if (parent_fq_name == "ERROR")
+                {
                     CONFIG_CLIENT_DEBUG(ConfigClientReadRetry,
-                        "Parent fq_name not available for ", uuid);
+                                        "Parent fq_name not available for ", uuid);
                     return false;
                 }
             }
-
-        } else if (key.compare("bgpaas_session_attributes") == 0) {
+        }
+        else if (key.compare("bgpaas_session_attributes") == 0)
+        {
 
             /**
               * Process bgpaas_session_attributes property.
@@ -889,8 +998,9 @@ bool ConfigEtcdPartition::GenerateAndPushJson(const string &uuid,
               */
 
             doc[key.c_str()].SetString("", a);
-
-        } else if (key.find("_refs") != string::npos && add_change) {
+        }
+        else if (key.find("_refs") != string::npos && add_change)
+        {
 
             /**
               * For _refs, if attr is NULL,
@@ -903,19 +1013,21 @@ bool ConfigEtcdPartition::GenerateAndPushJson(const string &uuid,
             // Determine if NULL attr needs to be processed
             string ref_type = key.substr(0, key.length() - 5);
             bool link_with_attr =
-                client()->mgr()->config_json_parser()-> \
-                    IsLinkWithAttr(obj_type, ref_type);
+                client()->mgr()->config_json_parser()->IsLinkWithAttr(obj_type, ref_type);
 
             // Get a pointer to the _refs json Value
             Value *v = &doc[key.c_str()];
 
             assert(v->IsArray());
-            for (SizeType i = 0; i < v->Size(); i++) {
+            for (SizeType i = 0; i < v->Size(); i++)
+            {
 
                 // Process NULL attr
                 Value &va = (*v)[i];
-                if (link_with_attr) {
-                    if (va["attr"].IsNull()) {
+                if (link_with_attr)
+                {
+                    if (va["attr"].IsNull())
+                    {
                         (*v)[i].RemoveMember("attr");
                         Value vm;
                         (*v)[i].AddMember("attr", vm.SetObject(), a);
@@ -924,7 +1036,7 @@ bool ConfigEtcdPartition::GenerateAndPushJson(const string &uuid,
 
                 /**
                   * Add ref_fq_name to the _ref
-                  * ETCD gives ref_fq_name as well but needs to be
+                  * K8S gives ref_fq_name as well but needs to be
                   * formatted as a string.
                   * Get ref_fq_name from FQNameCache if present.
                   * If not re-format the ref_fq_name present in the
@@ -934,24 +1046,27 @@ bool ConfigEtcdPartition::GenerateAndPushJson(const string &uuid,
                 const string ref_uuid = uuidVal.GetString();
                 string ref_fq_name = client()->FindFQName(ref_uuid);
 
-                if (ref_fq_name == "ERROR") {
+                if (ref_fq_name == "ERROR")
+                {
                     // ref_fq_name not in FQNameCache
                     // If we cannot find ref_fq_name in the doc
                     // as well, return false to enable retry.
-                    if (!va.HasMember("to")) {
+                    if (!va.HasMember("to"))
+                    {
                         CONFIG_CLIENT_DEBUG(ConfigClientReadRetry,
-                                   "Ref fq_name not available for ", uuid);
+                                            "Ref fq_name not available for ", uuid);
                         return false;
                     }
 
                     ref_fq_name.clear();
                     const Value &name = va["to"];
                     for (Value::ConstValueIterator itr = name.Begin();
-                         itr != name.End(); ++itr) {
+                         itr != name.End(); ++itr)
+                    {
                         ref_fq_name += itr->GetString();
                         ref_fq_name += ":";
                     }
-                    ref_fq_name.erase(ref_fq_name.end()-1);
+                    ref_fq_name.erase(ref_fq_name.end() - 1);
                 }
 
                 // Remove ref_fq_name from doc and re-add the
@@ -982,12 +1097,14 @@ bool ConfigEtcdPartition::GenerateAndPushJson(const string &uuid,
             cache->SetJsonString(cache_str);
         }
 
-        if (itr != doc.MemberEnd()) itr++;
+        if (itr != doc.MemberEnd())
+            itr++;
     }
 
-    if (!notify_update) {
+    if (!notify_update)
+    {
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-             "ETCD SM: Nothing to update");
+                            "K8S SM: Nothing to update");
         return true;
     }
 
@@ -998,7 +1115,7 @@ bool ConfigEtcdPartition::GenerateAndPushJson(const string &uuid,
     refDoc.Accept(writer1);
     string refString = sb1.GetString();
     CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-        "ETCD SM: JSON Doc fed to CJP: " + refString);
+                        "K8S SM: JSON Doc fed to CJP: " + refString);
 
     ConfigCass2JsonAdapter ccja(uuid, type_str, doc);
     client()->mgr()->config_json_parser()->Receive(ccja, add_change);
@@ -1006,18 +1123,20 @@ bool ConfigEtcdPartition::GenerateAndPushJson(const string &uuid,
     return true;
 }
 
-void ConfigEtcdPartition::ProcessUUIDDelete(
-                                       const string &uuid_key) {
+void ConfigK8sPartition::ProcessUUIDDelete(
+    const string &uuid_key)
+{
 
     /**
       * If FQName cache not present for the uuid, it is likely
       * a redundant delete since we remove it from the FQName
       * cache when a delete is processed. Ignore request.
       */
-    if (client()->FindFQName(uuid_key) == "ERROR") {
+    if (client()->FindFQName(uuid_key) == "ERROR")
+    {
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-             "ETCD SM: Nothing to delete");
-       return;
+                            "K8S SM: Nothing to delete");
+        return;
     }
 
     /**
@@ -1025,7 +1144,8 @@ void ConfigEtcdPartition::ProcessUUIDDelete(
       * Assert if uuid is not present in the cache.
       */
     UUIDCacheMap::iterator uuid_iter = uuid_cache_map_.find(uuid_key);
-    if (uuid_iter == uuid_cache_map_.end()) {
+    if (uuid_iter == uuid_cache_map_.end())
+    {
         return;
     }
     UUIDCacheEntry *cache = uuid_iter->second;
@@ -1035,8 +1155,9 @@ void ConfigEtcdPartition::ProcessUUIDDelete(
       * for the UUID has not been processed. Stop the timer,
       * and purge the FQName cache entry.
       */
-    if (cache->IsRetryTimerRunning()) {
-        cache->DisableEtcdReadRetry(uuid_key);
+    if (cache->IsRetryTimerRunning())
+    {
+        cache->DisableK8sReadRetry(uuid_key);
         client()->PurgeFQNameCache(uuid_key);
         return;
     }
@@ -1073,8 +1194,9 @@ void ConfigEtcdPartition::ProcessUUIDDelete(
     client()->PurgeFQNameCache(uuid_key);
 }
 
-void ConfigEtcdPartition::ProcessUUIDUpdate(const string &uuid_key,
-                                            const string &value_str) {
+void ConfigK8sPartition::ProcessUUIDUpdate(const string &uuid_key,
+                                           const string &value_str)
+{
     /**
       * Create UUIDCacheEntry if not present. This will create a
       * JSON document from the value_str and store in cache. The
@@ -1096,7 +1218,8 @@ void ConfigEtcdPartition::ProcessUUIDUpdate(const string &uuid_key,
       * deleted.
       */
     string cache_json_str = cache->GetJsonString();
-    if (cache_json_str.compare("retry") == 0) {
+    if (cache_json_str.compare("retry") == 0)
+    {
         // If we are retrying due to ref or parent
         // fq_name not available previously, cache
         // json_str would have been cleared and set
@@ -1122,11 +1245,12 @@ void ConfigEtcdPartition::ProcessUUIDUpdate(const string &uuid_key,
       * the object and trigger delete of the object.
       */
     if (!updDoc.HasMember("fq_name") ||
-        !updDoc.HasMember("type")) {
+        !updDoc.HasMember("type"))
+    {
         CONFIG_CLIENT_WARN(ConfigClientGetRowError,
-             "fq_name or type not present for ",
-             "obj_uuid_table with uuid: ", uuid_key);
-        cache->DisableEtcdReadRetry(uuid_key);
+                           "fq_name or type not present for ",
+                           "obj_uuid_table with uuid: ", uuid_key);
+        cache->DisableK8sReadRetry(uuid_key);
         ProcessUUIDDelete(uuid_key);
         return;
     }
@@ -1142,7 +1266,8 @@ void ConfigEtcdPartition::ProcessUUIDUpdate(const string &uuid_key,
       *    received update.
       */
     Value::ConstMemberIterator itr = updDoc.MemberBegin();
-    while (itr != updDoc.MemberEnd()) {
+    while (itr != updDoc.MemberEnd())
+    {
 
         key = itr->name.GetString();
 
@@ -1151,9 +1276,11 @@ void ConfigEtcdPartition::ProcessUUIDUpdate(const string &uuid_key,
           * Ignore if update is received in draft-mode state
           * and delete from cache.
           */
-        if (key.compare("draft_mode_state") == 0) {
+        if (key.compare("draft_mode_state") == 0)
+        {
             string mode = itr->value.GetString();
-            if (!mode.empty()) {
+            if (!mode.empty())
+            {
                 client()->PurgeFQNameCache(uuid_key);
                 DeleteUUIDCacheEntry(uuid_key);
                 return;
@@ -1168,19 +1295,24 @@ void ConfigEtcdPartition::ProcessUUIDUpdate(const string &uuid_key,
           * For updates/deletes, cache should already have
           * the fq_name and obj_type fields populated.
           */
-        if (is_new) {
-            if (key.compare("type") == 0) {
+        if (is_new)
+        {
+            if (key.compare("type") == 0)
+            {
                 string type = itr->value.GetString();
                 cache->SetObjType(type);
-            } else if (key.compare("fq_name") == 0) {
+            }
+            else if (key.compare("fq_name") == 0)
+            {
                 string fq_name;
                 const Value &name = updDoc[key.c_str()];
                 for (Value::ConstValueIterator name_itr = name.Begin();
-                     name_itr != name.End(); ++name_itr) {
+                     name_itr != name.End(); ++name_itr)
+                {
                     fq_name += name_itr->GetString();
                     fq_name += ":";
                 }
-                fq_name.erase(fq_name.end()-1);
+                fq_name.erase(fq_name.end() - 1);
                 cache->SetFQName(fq_name);
             }
         }
@@ -1194,13 +1326,18 @@ void ConfigEtcdPartition::ProcessUUIDUpdate(const string &uuid_key,
           */
         if (!is_new && cacheDoc.HasMember(key.c_str()) &&
             key.compare("type") != 0 &&
-            key.compare("fq_name") != 0) {
-            if (cacheDoc[key.c_str()] == updDoc[key.c_str()]) {
+            key.compare("fq_name") != 0)
+        {
+            if (cacheDoc[key.c_str()] == updDoc[key.c_str()])
+            {
                 itr = updDoc.EraseMember(itr);
             }
             assert(cacheDoc.RemoveMember(key.c_str()));
-        } else {
-            if (itr != updDoc.MemberEnd()) itr++;
+        }
+        else
+        {
+            if (itr != updDoc.MemberEnd())
+                itr++;
         }
     }
 
@@ -1224,15 +1361,19 @@ void ConfigEtcdPartition::ProcessUUIDUpdate(const string &uuid_key,
       * an error, retry after a while.
       */
     if (!GenerateAndPushJson(uuid_key,
-                        updDoc,
-                        true,
-                        cache)) {
-        cache->EnableEtcdReadRetry(uuid_key, value_str);
+                             updDoc,
+                             true,
+                             cache))
+    {
+        cache->EnableK8sReadRetry(uuid_key, value_str);
         cache->SetJsonString("retry");
-    } else {
-        cache->DisableEtcdReadRetry(uuid_key);
     }
-    if (!is_new) {
+    else
+    {
+        cache->DisableK8sReadRetry(uuid_key);
+    }
+    if (!is_new)
+    {
         GenerateAndPushJson(uuid_key,
                             cacheDoc,
                             false,
@@ -1240,10 +1381,12 @@ void ConfigEtcdPartition::ProcessUUIDUpdate(const string &uuid_key,
     }
 }
 
-bool ConfigEtcdPartition::IsListOrMapPropEmpty(const string &uuid_key,
-                                          const string &lookup_key) {
+bool ConfigK8sPartition::IsListOrMapPropEmpty(const string &uuid_key,
+                                              const string &lookup_key)
+{
     UUIDCacheMap::iterator uuid_iter = uuid_cache_map_.find(uuid_key);
-    if (uuid_iter == uuid_cache_map_.end()) {
+    if (uuid_iter == uuid_cache_map_.end())
+    {
         return true;
     }
     UUIDCacheEntry *cache = uuid_iter->second;
@@ -1251,36 +1394,44 @@ bool ConfigEtcdPartition::IsListOrMapPropEmpty(const string &uuid_key,
     return cache->ListOrMapPropEmpty(lookup_key);
 }
 
-bool ConfigEtcdPartition::IsTaskTriggered() const {
+bool ConfigK8sPartition::IsTaskTriggered() const
+{
     return (config_reader_->IsSet());
 }
 
-bool ConfigEtcdPartition::ConfigReader() {
+bool ConfigK8sPartition::ConfigReader()
+{
     CHECK_CONCURRENCY("config_client::Reader");
 
     int num_req_handled = 0;
 
     /**
       * Walk through the requests in uuid_process_request_map_ and process them.
-      * uuid_process_request_map_ contains the response from ETCD with the
+      * uuid_process_request_map_ contains the response from K8S with the
       * uuid key-value pairs.
       * Config reader task should stop on reinit trigger
       */
     for (UUIDProcessRequestMap::iterator it = uuid_process_request_map_.begin(), itnext;
          it != uuid_process_request_map_.end() &&
-                 !client()->mgr()->is_reinit_triggered();
-         it = itnext) {
+         !client()->mgr()->is_reinit_triggered();
+         it = itnext)
+    {
 
         itnext = it;
         ++itnext;
 
         boost::shared_ptr<UUIDProcessRequestType> obj_req = it->second;
 
-        if (obj_req->oper == "CREATE" || obj_req->oper == "UPDATE") {
+        if (obj_req->oper == "CREATE" || obj_req->oper == "UPDATE")
+        {
             ProcessUUIDUpdate(obj_req->uuid, obj_req->value);
-        } else if (obj_req->oper == "DELETE") {
+        }
+        else if (obj_req->oper == "DELETE")
+        {
             ProcessUUIDDelete(obj_req->uuid);
-        } else if (obj_req->oper == "EndOfConfig") {
+        }
+        else if (obj_req->oper == "EndOfConfig")
+        {
             client()->BulkSyncDone();
         }
         RemoveObjReqEntry(obj_req->uuid);
@@ -1289,22 +1440,25 @@ bool ConfigEtcdPartition::ConfigReader() {
           * Max. UUIDs to be processed in one config reader task
           * exectution is bound by kMaxRequestsToYield
           */
-        if (++num_req_handled == client()->GetMaxRequestsToYield()) {
+        if (++num_req_handled == client()->GetMaxRequestsToYield())
+        {
             return false;
         }
     }
 
     // Clear the UUID read set if we are currently processing reinit request
-    if (client()->mgr()->is_reinit_triggered()) {
+    if (client()->mgr()->is_reinit_triggered())
+    {
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-            "ETCD SM: Clear UUID process set due to reinit");
+                            "K8S SM: Clear UUID process set due to reinit");
         uuid_process_request_map_.clear();
     }
     assert(uuid_process_request_map_.empty());
     return true;
 }
 
-void ConfigEtcdPartition::RemoveObjReqEntry(string &uuid) {
+void ConfigK8sPartition::RemoveObjReqEntry(string &uuid)
+{
     UUIDProcessRequestMap::iterator req_it =
         uuid_process_request_map_.find(client()->GetUUID(uuid));
     req_it->second.reset();
