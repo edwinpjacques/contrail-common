@@ -21,10 +21,10 @@ FACTORY_STATIC_REGISTER(ConfigFactory, ConfigCassandraClient,
 FACTORY_STATIC_REGISTER(ConfigFactory, ConfigAmqpChannel, ConfigAmqpChannel);
 
 #ifdef CONTRAIL_K8S_CONFIG
-#include "config_etcd_client.h"
+#include "config_k8s_client.h"
 FACTORY_STATIC_REGISTER(ConfigFactory, ConfigEtcdPartition,
                         ConfigEtcdPartition);
-#include "config_etcd_client.h"
+#include "config_k8s_client.h"
 FACTORY_STATIC_REGISTER(ConfigFactory, ConfigEtcdClient,
                         ConfigEtcdClient);
 #include "database/etcd/eql_if.h"

@@ -2,7 +2,7 @@
  * Copyright (c) 2018 Juniper Networks, Inc. All rights reserved.
  */
 
-#include "config-client-mgr/config_etcd_client.h"
+#include "config-client-mgr/config_k8s_client.h"
 
 #include <sandesh/request_pipeline.h>
 
@@ -255,11 +255,11 @@ void ConfigEtcdClient::BulkSyncDone() {
         bulk_sync_status_.fetch_and_decrement();
     if (num_config_readers_still_processing == 1) {
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-                            "Etcd SM: BulkSyncDone by all readers");
+                            "ETCD SM: BulkSyncDone by all readers");
         mgr()->EndOfConfig();
     } else {
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-                            "Etcd SM: One reader finished BulkSync");
+                            "ETCD SM: One reader finished BulkSync");
     }
 }
 
@@ -390,6 +390,7 @@ bool ConfigEtcdClient::UUIDReader() {
     bool read_done = false;
     ostringstream os;
 
+    // Iterate through all of the object types
     for (ConfigClientManager::ObjectTypeList::const_iterator it =
              mgr()->config_json_parser()->ObjectTypeListToRead().begin();
          it != mgr()->config_json_parser()->ObjectTypeListToRead().end();
@@ -540,24 +541,24 @@ ConfigEtcdPartition::ConfigEtcdPartition(
     int task_id = TaskScheduler::GetInstance()->GetTaskId("config_client::Reader");
     config_reader_.reset(new
      TaskTrigger(boost::bind(&ConfigEtcdPartition::ConfigReader, this),
-     task_id, idx));
+     task_id, worker_id_));
     task_id =
         TaskScheduler::GetInstance()->GetTaskId("config_client::ObjectProcessor");
-    obj_process_queue_.reset(new WorkQueue<ObjectProcessReq *>(
-        task_id, idx, bind(&ConfigEtcdPartition::RequestHandler, this, _1),
+    obj_process_request_queue_.reset(new WorkQueue<ObjectProcessReq *>(
+        task_id, worker_id_, bind(&ConfigEtcdPartition::ObjectProcessReqHandler, this, _1),
         WorkQueue<ObjectProcessReq *>::kMaxSize, 512));
 }
 
 ConfigEtcdPartition::~ConfigEtcdPartition() {
-    obj_process_queue_->Shutdown();
+    obj_process_request_queue_->Shutdown();
 }
 
 void ConfigEtcdPartition::Enqueue(ObjectProcessReq *req) {
-    obj_process_queue_->Enqueue(req);
+    obj_process_request_queue_->Enqueue(req);
 }
 
-bool ConfigEtcdPartition::RequestHandler(ObjectProcessReq *req) {
-    AddUUIDToProcessList(req->oper_, req->uuid_str_, req->value_);
+bool ConfigEtcdPartition::ObjectProcessReqHandler(ObjectProcessReq *req) {
+    AddUUIDToProcessRequestMap(req->oper_, req->uuid_str_, req->value_);
     delete req;
     return true;
 }
@@ -565,25 +566,25 @@ bool ConfigEtcdPartition::RequestHandler(ObjectProcessReq *req) {
 /**
   * Add the UUID key/value pair to the process list.
   */
-void ConfigEtcdPartition::AddUUIDToProcessList(const string &oper,
-                                               const string &uuid_key,
-                                               const string &value_str) {
-    pair<UUIDProcessSet::iterator, bool> ret;
-    bool trigger = uuid_process_set_.empty();
+void ConfigEtcdPartition::AddUUIDToProcessRequestMap(const string &oper,
+                                                     const string &uuid_key,
+                                                     const string &value_str) {
+    pair<UUIDProcessRequestMap::iterator, bool> ret;
+    bool trigger = uuid_process_request_map_.empty();
 
     /**
       * Get UUID from uuid_key which contains the entire path
-      * and insert into uuid_process_set_
+      * and insert into uuid_process_request_map_
       */
     size_t front_pos = uuid_key.rfind('/');
     string uuid = uuid_key.substr(front_pos + 1);
     boost::shared_ptr<UUIDProcessRequestType> req(
         new UUIDProcessRequestType(oper, uuid, value_str));
-    ret = uuid_process_set_.insert(make_pair(client()->GetUUID(uuid), req));
+    ret = uuid_process_request_map_.insert(make_pair(client()->GetUUID(uuid), req));
     if (ret.second) {
         /**
-          * UUID not present in uuid_process_set_.
-          * If uuid_process_set_ is empty, trigger config_reader_
+          * UUID not present in uuid_process_request_map_.
+          * If uuid_process_request_map_ is empty, trigger config_reader_
           * to process the uuids.
           */
         if (trigger) {
@@ -591,16 +592,17 @@ void ConfigEtcdPartition::AddUUIDToProcessList(const string &oper,
         }
     } else {
         /**
-          * UUID already present in uuid_process_set_. If operation is
-          * DELETE preceeded by CREATE, remove from uuid_process_set_.
+          * UUID already present in uuid_process_request_map_. If operation is
+          * DELETE preceeded by CREATE, remove from uuid_process_request_map_.
           * For other cases (CREATE/UPDATE) replace the entry with the
           * new value and oper.
           */
         if ((oper == "DELETE") &&
             (ret.first->second->oper == "CREATE")) {
-            uuid_process_set_.erase(ret.first);
+            uuid_process_request_map_.erase(ret.first);
             client()->PurgeFQNameCache(uuid);
         } else {
+            // Replace the entry that was found in the map
             req.reset();
             ret.first->second->oper = oper;
             ret.first->second->uuid = uuid;
@@ -1259,13 +1261,13 @@ bool ConfigEtcdPartition::ConfigReader() {
     int num_req_handled = 0;
 
     /**
-      * Walk through the requests in uuid_process_set_ and process them.
-      * uuid_process_set_ contains the response from ETCD with the
+      * Walk through the requests in uuid_process_request_map_ and process them.
+      * uuid_process_request_map_ contains the response from ETCD with the
       * uuid key-value pairs.
       * Config reader task should stop on reinit trigger
       */
-    for (UUIDProcessSet::iterator it = uuid_process_set_.begin(), itnext;
-         it != uuid_process_set_.end() &&
+    for (UUIDProcessRequestMap::iterator it = uuid_process_request_map_.begin(), itnext;
+         it != uuid_process_request_map_.end() &&
                  !client()->mgr()->is_reinit_triggered();
          it = itnext) {
 
@@ -1296,15 +1298,15 @@ bool ConfigEtcdPartition::ConfigReader() {
     if (client()->mgr()->is_reinit_triggered()) {
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
             "ETCD SM: Clear UUID process set due to reinit");
-        uuid_process_set_.clear();
+        uuid_process_request_map_.clear();
     }
-    assert(uuid_process_set_.empty());
+    assert(uuid_process_request_map_.empty());
     return true;
 }
 
 void ConfigEtcdPartition::RemoveObjReqEntry(string &uuid) {
-    UUIDProcessSet::iterator req_it =
-        uuid_process_set_.find(client()->GetUUID(uuid));
+    UUIDProcessRequestMap::iterator req_it =
+        uuid_process_request_map_.find(client()->GetUUID(uuid));
     req_it->second.reset();
-    uuid_process_set_.erase(req_it);
+    uuid_process_request_map_.erase(req_it);
 }

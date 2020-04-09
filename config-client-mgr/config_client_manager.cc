@@ -15,7 +15,7 @@
 #include "config_db_client.h"
 #include "config_cassandra_client.h"
 #ifdef CONTRAIL_K8S_CONFIG
-#include "config_etcd_client.h"
+#include "config_k8s_client.h"
 #endif
 #include "config_client_log.h"
 #include "config_client_log_types.h"

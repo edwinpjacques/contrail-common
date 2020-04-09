@@ -12,9 +12,9 @@ env.Append(CPPPATH = [env['TOP'] + '/config-client-mgr'])
 env.Append(CPPPATH = [env['TOP'] + '/base/sandesh'])
 env.Append(CPPPATH = [env['TOP'] + '/database'])
 
-etcd_incl = os.environ.get('CONTRAIL_K8S_CONFIG');
+k8s_incl = os.environ.get('CONTRAIL_K8S_CONFIG');
 
-if etcd_incl:
+if k8s_incl:
     env.Append(CXXFLAGS = '-Wall -DCONTRAIL_K8S_CONFIG -std=c++11')
     env.Prepend(LIBS=['etcdql'])
 
@@ -40,12 +40,12 @@ except_env = BuildEnv.Clone()
 except_env.CppEnableExceptions()
 except_env.Append(CPPPATH = env['TOP'])
 
-if etcd_incl:
+if k8s_incl:
     libconfig_client_mgr = env.Library('config_client_mgr',
                          ['config_amqp_client.cc',
                           'config_cass2json_adapter.cc',
                           'config_cassandra_client.cc',
-                          'config_etcd_client.cc',
+                          'config_k8s_client.cc',
                           'config_client_manager.cc',
                           'config_db_client.cc',
                           'config_factory.cc',

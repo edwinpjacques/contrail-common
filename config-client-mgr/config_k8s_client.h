@@ -43,7 +43,7 @@ class ConfigEtcdPartition {
     virtual ~ConfigEtcdPartition();
 
     typedef boost::shared_ptr<WorkQueue<ObjectProcessReq *> >
-             UUIDProcessWorkQType;
+             UUIDProcessRequestQPtr;
 
     class UUIDCacheEntry : public ObjectCacheEntry {
      public:
@@ -122,10 +122,6 @@ class ConfigEtcdPartition {
 
     int GetInstanceId() const { return worker_id_; }
 
-    UUIDProcessWorkQType obj_process_queue() {
-        return obj_process_queue_;
-    }
-
     void Enqueue(ObjectProcessReq *req);
     bool IsListOrMapPropEmpty(const string &uuid_key,
                               const string &lookup_key);
@@ -148,10 +144,10 @@ private:
         string value;
     };
 
-    typedef map<string, boost::shared_ptr<UUIDProcessRequestType> > UUIDProcessSet;
+    typedef map<string, boost::shared_ptr<UUIDProcessRequestType> > UUIDProcessRequestMap;
 
-    bool RequestHandler(ObjectProcessReq *req);
-    void AddUUIDToProcessList(const string &oper,
+    bool ObjectProcessReqHandler(ObjectProcessReq *req);
+    void AddUUIDToProcessRequestMap(const string &oper,
                               const string &uuid_key,
                               const string &value_str);
     bool ConfigReader();
@@ -165,10 +161,18 @@ private:
             UUIDCacheEntry *cache);
     void RemoveObjReqEntry(string &uuid);
 
-    UUIDProcessWorkQType obj_process_queue_;
-    UUIDProcessSet uuid_process_set_;
-    UUIDCacheMap uuid_cache_map_;
+    // 
     boost::shared_ptr<TaskTrigger> config_reader_;
+
+    // Pointer to incoming work for this partition (thread).
+    // Work include type (CREATE/UPDATE/DELETE), UUID and value (json).
+    UUIDProcessRequestQPtr obj_process_request_queue_;
+    // Map of UUID to process requests. 
+    UUIDProcessRequestMap uuid_process_request_map_;
+    
+    // Map of UUID to JSON data.  Maintains last_read_tstamp_ retry metadata.
+    UUIDCacheMap uuid_cache_map_;
+    
     ConfigEtcdClient *config_client_;
     int worker_id_;
 };
@@ -186,6 +190,7 @@ class ConfigEtcdClient : public ConfigDbClient {
                           int num_workers);
     virtual ~ConfigEtcdClient();
 
+    // Called by InitConfigClient() to initialize bulk synchronization.
     virtual void InitDatabase();
     void BulkSyncDone();
     void EnqueueUUIDRequest(string oper, string obj_type,
@@ -196,6 +201,7 @@ class ConfigEtcdClient : public ConfigDbClient {
     const ConfigEtcdPartition *GetPartition(int worker_id) const;
 
     // Start ETCD watch for config updates
+    // Invoked by ConfigClientManager
     void StartWatcher();
 
     // UUID Cache
@@ -233,7 +239,11 @@ private:
     class EtcdWatcher;
 
     bool InitRetry();
+
+    // BulkDataSync of all object types from etcd
     bool UUIDReader();
+
+    // Set and log connection status
     void HandleEtcdConnectionStatus(bool success,
                                     bool force_update = false);
 
@@ -241,7 +251,7 @@ private:
     static bool disable_watch_;
 
     boost::scoped_ptr<EtcdIf> eqlif_;
-    int num_workers_;
+    const int num_workers_;
     PartitionList partitions_;
     boost::scoped_ptr<TaskTrigger> uuid_reader_;
     tbb::atomic<long> bulk_sync_status_;
