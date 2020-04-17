@@ -14,8 +14,8 @@
 #include "config_amqp_client.h"
 #include "config_db_client.h"
 #include "config_cassandra_client.h"
-#ifdef CONTRAIL_ETCD_INCL
-#include "config_etcd_client.h"
+#ifdef CONTRAIL_K8S_CONFIG
+#include "config_k8s_client.h"
 #endif
 #include "config_client_log.h"
 #include "config_client_log_types.h"
@@ -99,12 +99,11 @@ void ConfigClientManager::SetDefaultSchedulingPolicy() {
     scheduler->SetPolicy(scheduler->GetTaskId("amqp::RabbitMQReader"),
         rabbitmq_reader_policy);
 
-    // Policy for etcd::EtcdWatcher process
-    TaskPolicy etcd_watcher_policy = boost::assign::list_of
+    // Policy for k8s::K8sWatcher process
+    TaskPolicy k8s_watcher_policy = boost::assign::list_of
         (TaskExclusion(scheduler->GetTaskId("config_client::Init")));
-    scheduler->SetPolicy(scheduler->GetTaskId("etcd::EtcdWatcher"),
-        etcd_watcher_policy);
-
+    scheduler->SetPolicy(scheduler->GetTaskId("k8s::K8sWatcher"),
+        k8s_watcher_policy);
 }
 
 void ConfigClientManager::SetUp() {
@@ -113,8 +112,8 @@ void ConfigClientManager::SetUp() {
     thread_count_ = GetNumConfigReader();
     end_of_rib_computed_at_ = UTCTimestampUsec();
     if (config_options_.config_db_use_etcd) {
-#ifdef CONTRAIL_ETCD_INCL
-        config_db_client_.reset(ConfigFactory::Create<ConfigEtcdClient>
+#ifdef CONTRAIL_K8S_CONFIG
+        config_db_client_.reset(ConfigFactory::Create<ConfigK8sClient>
                                 (this, evm_, config_options_,
                                  thread_count_));
 #endif
@@ -241,8 +240,8 @@ void ConfigClientManager::PostShutdown() {
     // Delete of config db client object guarantees the flusing of
     // object uuid cache and uuid read request list.
     if (config_options_.config_db_use_etcd) {
-#ifdef CONTRAIL_ETCD_INCL
-        config_db_client_.reset(ConfigFactory::Create<ConfigEtcdClient>
+#ifdef CONTRAIL_K8S_CONFIG
+        config_db_client_.reset(ConfigFactory::Create<ConfigK8sClient>
                                 (this, evm_, config_options_,
                                  thread_count_));
 #endif
@@ -285,9 +284,9 @@ bool ConfigClientManager::InitConfigClient() {
 
     // Common code path for both init/reinit
     if (config_options_.config_db_use_etcd) {
-#ifdef CONTRAIL_ETCD_INCL
+#ifdef CONTRAIL_K8S_CONFIG
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-            "Config Client Mgr SM: Start ETCD Watcher");
+            "Config Client Mgr SM: Start K8S Watcher");
         config_db_client_->StartWatcher();
 #endif
     } else {
