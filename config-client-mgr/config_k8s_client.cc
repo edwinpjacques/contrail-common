@@ -18,12 +18,12 @@
 #include <boost/foreach.hpp>
 #include <boost/functional/hash.hpp>
 #include <boost/ptr_container/ptr_map.hpp>
-#include <boost/uuid/uuid.hpp>
 #include <map>
 #include <set>
 #include <string>
 #include <utility>
 
+#include "base/string_util.h"
 #include "base/connection_info.h"
 #include "base/logging.h"
 #include "base/regex.h"
@@ -201,15 +201,15 @@ void ConfigK8sClient::ProcessResponse(EtcdResponse resp)
 
     if (resp.action() == 0)
     {
-        EnqueueUUIDRequest("CREATE", resp.key(), resp.value());
+        EnqueueUUIDRequest("ADDED", resp.key(), resp.value());
     }
     else if (resp.action() == 1)
     {
-        EnqueueUUIDRequest("UPDATE", resp.key(), resp.value());
+        EnqueueUUIDRequest("MODIFIED", resp.key(), resp.value());
     }
     else if (resp.action() == 2)
     {
-        EnqueueUUIDRequest("DELETE", resp.key(), resp.value());
+        EnqueueUUIDRequest("DELETED", resp.key(), resp.value());
     }
 }
 
@@ -267,6 +267,320 @@ bool ConfigK8sClient::InitRetry()
         return false;
     usleep(GetInitRetryTimeUSec());
     return true;
+}
+
+string ConfigK8sClient::JsonToString(const Value& jsonValue)
+{
+    StringBuffer stringBuffer;
+    Writer<StringBuffer> writer(stringBuffer);
+    jsonValue.Accept(writer);
+    return stringBuffer.GetString();        
+}
+
+// Convert a UUID into a pair of longs in big-endian format.
+// Sets longs[0] are the most-significant bytes, 
+// and longs[1] to the least-significant bytes.
+void ConfigK8sClient::UuidToLongLongs(
+    const string& uuid, unsigned long long longs[])
+{
+    // convert string UUID into binary UUID
+    boost::uuids::string_generator string_gen;
+    boost::uuids::uuid boost_uuid = string_gen(uuid);
+    __uint128_t uuid_data = 
+        *reinterpret_cast<__uint128_t*>(boost_uuid.data);
+
+    // get the least and most significant bytes
+    unsigned long long uuid_first_longlong = uuid_data >> 64;
+    unsigned long long uuid_second_longlong = 
+        uuid_data & (((__uint128_t)1 << 64) - (__uint128_t)1);
+
+    // convert from big-endian to hardware byte order (usually little-endian)
+    unsigned long long uuid_first_longlong_h = be64toh(uuid_first_longlong);
+    unsigned long long uuid_second_longlong_h = be64toh(uuid_second_longlong);
+
+    // if we converted the byte order, swap least and most significant bytes
+    if (uuid_first_longlong_h == uuid_first_longlong) 
+    {
+        longs[0] = uuid_first_longlong_h;
+        longs[1] = uuid_second_longlong_h;
+    }
+    else
+    {
+        longs[1] = uuid_first_longlong_h;
+        longs[0] = uuid_second_longlong_h;
+    }
+}
+
+// Convert a TypeName or fieldName to type_name or field_name
+const string ConfigK8sClient::K8sNameConvert(
+    const char* type_name, unsigned length)
+{
+    string ret;
+    for (size_t i = 0; i < length; ++i)
+    {
+        char c = type_name[i];
+        char lc = tolower(c);
+        if (c != lc && i > 0) {
+            ret +='_';
+        }
+        ret += lc;
+    }
+    return ret;
+}
+
+void ConfigK8sClient::K8sJsonMemberConvert(
+    Value::ConstMemberIterator& member, 
+    Value& object, 
+    Document::AllocatorType& alloc)
+{
+    // convert the name
+    string member_name_string = 
+        ConfigK8sClient::K8sNameConvert(
+            member->name.GetString(), member->name.GetStringLength());
+    Value new_member_name;
+    new_member_name.SetString(
+        member_name_string.c_str(), member_name_string.length(), alloc);
+
+    // create the new value
+    Value new_member;
+    if(member->value.IsObject())
+    {
+        // If this is an object, recurse
+        new_member.SetObject();
+        for (Value::ConstMemberIterator sub_object = 
+            member->value.MemberBegin();
+            sub_object != member->value.MemberEnd();
+            ++sub_object)
+        {
+            // recurse to visit other objects
+            ConfigK8sClient::K8sJsonMemberConvert(
+                sub_object, new_member, alloc);
+        }
+    }
+    else
+    {
+        new_member.CopyFrom(member->value, alloc);
+    }
+    object.AddMember(new_member_name, new_member, alloc);
+}
+
+void ConfigK8sClient::K8sJsonAddRefs(
+    Value::ConstMemberIterator& ref, 
+    Document& cass_dom)
+{
+    // convert and set the name of the ref to add
+    string ref_name_str = ConfigK8sClient::K8sNameConvert(
+        ref->name.GetString(), ref->name.GetStringLength());
+    if (ref->value.IsObject()) {
+        // If this is a parent reference, need to set the kind
+        if (ref_name_str == "parent")
+        {
+            Value::ConstMemberIterator ref_kind = ref->value.FindMember("kind");
+            if (ref_kind != ref->value.MemberEnd())
+            {
+                string parent_type_str = ConfigK8sClient::K8sNameConvert(
+                    ref_kind->value.GetString(), ref_kind->value.GetStringLength());
+                Value parent_type;
+                
+                parent_type.SetString(
+                    parent_type_str.c_str(), parent_type_str.length(), 
+                    cass_dom.GetAllocator());
+                cass_dom.AddMember("parent_type", parent_type, cass_dom.GetAllocator());
+            }
+
+            Value::ConstMemberIterator ref_uid = ref->value.FindMember("uid");
+            if (ref_uid != ref->value.MemberEnd())
+            {
+                Value parent_uuid;
+                parent_uuid.CopyFrom(ref_uid->value, cass_dom.GetAllocator());
+                cass_dom.AddMember("parent_uuid", parent_uuid, cass_dom.GetAllocator());
+            }
+        }
+    }
+    else if (ref->value.IsArray()) {
+        // If the value is an array, create an array and add each array element
+        // to the dom.
+        Value ref_value;
+        ref_value.SetArray();
+
+        for (Value::ConstValueIterator refs = ref->value.GetArray().Begin(); 
+             refs != ref->value.GetArray().End(); 
+             ++refs)
+        {
+            Value ref_array_val;
+            ref_array_val.SetObject();
+            
+            Value::ConstMemberIterator ref_uid = refs->FindMember("uid");
+            if (ref_uid != refs->MemberEnd())
+            {
+                Value uuid;
+                uuid.CopyFrom(ref_uid->value, cass_dom.GetAllocator());
+                ref_array_val.AddMember("uuid", uuid, cass_dom.GetAllocator());
+            }
+
+            Value::ConstMemberIterator ref_attributes = 
+                refs->FindMember("attributes");
+            if (ref_attributes != refs->MemberEnd())
+            {
+                Value cass_attributes;
+                ConfigK8sClient::K8sJsonMemberConvert(
+                    ref_attributes, ref_array_val, cass_dom.GetAllocator());
+            }
+
+            // add the new array element to the array
+            ref_value.PushBack(ref_array_val, cass_dom.GetAllocator());
+        }
+
+        // add the array to the ref_val
+        Value ref_name;
+        ref_name.SetString(ref_name_str.c_str(), ref_name_str.length(), cass_dom.GetAllocator());
+        cass_dom.AddMember(ref_name, ref_value, cass_dom.GetAllocator());
+    }
+    // TODO: error in other cases?
+}
+
+void ConfigK8sClient::K8sJsonConvert(
+    const Document& dom, Document& cass_dom)
+{
+    assert(dom.IsObject());
+
+    // Rename kind to type
+    Value::ConstMemberIterator kind = dom.FindMember("kind");
+    string type_val_str = 
+        ConfigK8sClient::K8sNameConvert(
+            kind->value.GetString(), kind->value.GetStringLength());
+    Value type_val;
+    type_val.SetString(
+        type_val_str.c_str(), type_val_str.length(), cass_dom.GetAllocator());
+    cass_dom.SetObject();
+    cass_dom.AddMember("type", type_val, cass_dom.GetAllocator());
+
+    // Add the displayName
+    Value::ConstMemberIterator metadata = dom.FindMember("metadata");
+    Value::ConstMemberIterator annotations = dom.MemberEnd();
+    if (metadata != dom.MemberEnd()) {
+        annotations = metadata->value.FindMember("annotations");
+        if (annotations != metadata->value.MemberEnd()) {
+            Value::ConstMemberIterator display_name = 
+                annotations->value.FindMember(
+                    "core.contrail.juniper.net/display-name");
+            if (display_name != annotations->value.MemberEnd()) {
+                Value display_name_val(
+                    display_name->value, cass_dom.GetAllocator());
+                cass_dom.AddMember(
+                    "display_name", display_name_val, cass_dom.GetAllocator());
+            }
+        }
+    }
+
+    // Add and rename fqName
+    Value::ConstMemberIterator status = dom.FindMember("status");
+    Value::ConstMemberIterator fqName = status->value.FindMember("fqName");
+    if (fqName != status->value.MemberEnd()) {
+        Value fq_name_val(fqName->value, cass_dom.GetAllocator());
+        cass_dom.AddMember("fq_name", fq_name_val, cass_dom.GetAllocator());
+    }
+
+    // Add uuid
+    Value::ConstMemberIterator uid = metadata->value.FindMember("uid");
+    string uuid_string;
+    if (uid != metadata->value.MemberEnd()) {
+        uuid_string = uid->value.GetString();
+    }
+    Value uuid_val(uid->value, cass_dom.GetAllocator());
+    cass_dom.AddMember("uuid", uuid_val, cass_dom.GetAllocator());
+    Value::ConstMemberIterator uuid = dom.FindMember("uuid");
+
+    // build idperm object and add description
+    Value idperms_val;
+    idperms_val.SetObject();
+    if (metadata != dom.MemberEnd() && 
+        annotations != metadata->value.MemberEnd()) 
+    {
+        Value::ConstMemberIterator description = 
+            annotations->value.FindMember(
+                "core.contrail.juniper.net/description");
+        if (description != annotations->value.MemberEnd() && 
+            !description->value.IsNull()) 
+        {
+            Value description_val(description->value, cass_dom.GetAllocator());
+            idperms_val.AddMember(
+                "description", description_val, cass_dom.GetAllocator());
+        }
+    }
+
+    // add created time to idperm
+    if (metadata != dom.MemberEnd()) {
+        Value::ConstMemberIterator created = 
+            metadata->value.FindMember("creationTimestamp");
+        if (created != metadata->value.MemberEnd() && 
+            !created->value.IsNull()) 
+        {
+            Value created_val(created->value, cass_dom.GetAllocator());
+            idperms_val.AddMember(
+                "created", created_val, cass_dom.GetAllocator());
+        }
+    }
+
+    if (!uuid_string.empty()) {
+        // convert string UUID into binary UUID
+        unsigned long long longs[2] = {0};
+        UuidToLongLongs(uuid_string, longs);
+
+        // create uuid object (binary) and add most signifigant 8 bytes
+        Value idperm_uuid;
+        idperm_uuid.SetObject();
+        Value uuid_mslong_val;
+        uuid_mslong_val.SetUint64(longs[0]);
+        idperm_uuid.AddMember(
+            "uuid_mslong", uuid_mslong_val, cass_dom.GetAllocator());
+
+        // add least significant 8 bytes to uuid object
+        Value uuid_lslong_val;
+        uuid_lslong_val.SetUint64(longs[1]);
+        idperm_uuid.AddMember(
+            "uuid_lslong", uuid_lslong_val, cass_dom.GetAllocator());
+
+        // finally, add uuid to id_perms
+        idperms_val.AddMember("uuid", idperm_uuid, cass_dom.GetAllocator());
+    }
+
+    // add id_perms to the dom
+    cass_dom.AddMember("id_perms", idperms_val, cass_dom.GetAllocator());
+
+    // Iterate through the spec.  Add all the values as members of the dom.
+    Value::ConstMemberIterator spec = dom.FindMember("spec");
+    if (spec != dom.MemberEnd() && !spec->value.IsNull()) {
+        for (Value::ConstMemberIterator spec_member = 
+                spec->value.MemberBegin();
+            spec_member != spec->value.MemberEnd();
+            ++spec_member)
+        {
+            // change all names to follow contrail legacy naming conventions
+            // and add them to the dom (recursively).
+            ConfigK8sClient::K8sJsonMemberConvert(
+                spec_member, cass_dom, cass_dom.GetAllocator());
+        }
+    }
+
+    // Iterate through the status.  Add all refs to the dom.
+
+    // First look for parent ref.
+    Value::ConstMemberIterator parent = status->value.FindMember("parent");
+    if (parent != status->value.MemberEnd()) {
+        ConfigK8sClient::K8sJsonAddRefs(parent, cass_dom);
+    }
+
+    // Then look for all other refs.
+    for(Value::ConstMemberIterator status_member = status->value.MemberBegin(); 
+        status_member != status->value.MemberEnd(); 
+        ++status_member)
+    {
+        string member_name = status_member->name.GetString();
+        if (member_name.rfind("Refs") != string::npos) {
+            ConfigK8sClient::K8sJsonAddRefs(status_member, cass_dom);
+        }
+    }
 }
 
 bool ConfigK8sClient::BulkDataSync()
@@ -334,89 +648,106 @@ void ConfigK8sClient::EnqueueUUIDRequest(string oper,
                                          string uuid,
                                          string value)
 {
-    /**
-      * uuid contains the entire config path
-      * For instance /contrail/virtual_network/<uuid>
-      * We form the request with the entire path so that
-      * testing code can utilize it to form various
-      * requests for the same uuid. However, when the
-      * request is processed later by the appropriate
-      * Partition, the path will be trimmed and only
-      * the uuid string will be used. Same is the case
-      * for the FQName cache. It will use the trimmed
-      * uuid as the key since it is invoked from the
-      * Partitions later.
-      */
+    Document value_json;
+    value_json.Parse<0>(value.c_str());
 
-    // Get the trimmed uuid
-    size_t front_pos = uuid.rfind('/');
-    string uuid_key = uuid.substr(front_pos + 1);
-
-    // Cache uses the trimmed uuid
-    if (oper == "CREATE" || oper == "UPDATE")
+    // If non-object JSON is received, log a warning and return.
+    if (!value_json.IsObject())
     {
-        Document d;
-        d.Parse<0>(value.c_str());
-        Document::AllocatorType &a = d.GetAllocator();
+        CONFIG_CLIENT_WARN(ConfigClientMgrWarning, "K8S SM: Received "
+                                                    "non-object json. uuid: " +
+                                                    uuid + " value: " + value + ". Skipping");
+        return;
+    }
 
-        // If non-object JSON is received, log a warning and return.
-        if (!d.IsObject())
+    // Ignore all object without the state "Succes"
+
+    Value::MemberIterator status = value_json.FindMember("status");
+    if (status == value_json.MemberEnd()) {
+        CONFIG_CLIENT_WARN(ConfigClientMgrWarning, "K8S SM: Received "
+                                                    "json object without status field. uuid: " +
+                                                    uuid + " value: " + value + ". Skipping");
+        return;
+    }
+
+    Value::MemberIterator state = status->value.FindMember("state");
+    if (state == status->value.MemberEnd()) {
+        CONFIG_CLIENT_WARN(ConfigClientMgrWarning, "K8S SM: Received "
+                                                    "json object without state. uuid: " +
+                                                    uuid + " value: " + value + ". Skipping");
+        return;
+    }
+
+    static const char success_cstr[] = "Success";
+    if (strncmp(state->value.GetString(), success_cstr, sizeof(success_cstr)) != 0 ) {
+        CONFIG_CLIENT_WARN(ConfigClientMgrWarning, "K8S SM: Received "
+                                                    "json object with Status != Success. uuid: " +
+                                                    uuid + " value: " + value + ". Skipping");
+        return;
+    }            
+
+    string before_conversion = JsonToString(value_json);
+    CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug, "K8S SM: BEFORE CONVERSION: " + before_conversion);
+
+    // Translate from K8s DOM to internal (Cassandra) format.
+    Document cass_json;
+    K8sJsonConvert(value_json, cass_json);
+
+    string after_conversion = JsonToString(cass_json);
+    CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug, "K8S SM: AFTER CONVERSION: " + after_conversion);
+
+    if (oper == "ADDED" || oper == "MODIFIED")
+    {   
+        // Add to FQName cache if not present
+        Value::ConstMemberIterator type = cass_json.FindMember("type");
+        if (type == cass_json.MemberEnd())
         {
             CONFIG_CLIENT_WARN(ConfigClientMgrWarning, "K8S SM: Received "
-                                                       "non-object json. uuid: " +
-                                                       uuid_key + " value: " + value + " .Skipping");
+                                                        "json object without type specified. uuid: " +
+                                                        uuid + " object: " + after_conversion + ". Skipping");
             return;
         }
-
-        // K8S does not provide obj-type since it is encoded in the
-        // UUID key. Since config_json_parser and IFMap need type to be
-        // present in the document, fix up by adding obj-type.
-        if (!d.HasMember("type"))
+        string type_str = type->value.GetString();
+        Value::ConstMemberIterator fq_name = cass_json.FindMember("fq_name");
+        if (fq_name == cass_json.MemberEnd() || fq_name->value.IsNull() || !fq_name->value.IsArray())
         {
-            string type = uuid.substr(10, front_pos - 10);
-            Value v;
-            Value va;
-            d.AddMember(v.SetString("type", a),
-                        va.SetString(type.c_str(), a), a);
-            StringBuffer sb;
-            Writer<StringBuffer> writer(sb);
-            d.Accept(writer);
-            value = sb.GetString();
+            CONFIG_CLIENT_WARN(ConfigClientMgrWarning, "K8S SM: Received "
+                                                        "json object without fq_name specified. uuid: " +
+                                                        uuid + " object: " + after_conversion + ". Skipping");
+            return;
         }
-
-        // Add to FQName cache if not present
-        if (d.HasMember("type") &&
-            d.HasMember("fq_name"))
+        string fq_name_str;
+        for (Value::ConstValueIterator name_itr = fq_name->value.Begin();
+             name_itr != fq_name->value.End(); 
+             ++name_itr)
         {
-            string obj_type = d["type"].GetString();
-            string fq_name;
-            const Value &name = d["fq_name"];
-            for (Value::ConstValueIterator name_itr = name.Begin();
-                 name_itr != name.End(); ++name_itr)
-            {
-                fq_name += name_itr->GetString();
-                fq_name += ":";
-            }
-            fq_name.erase(fq_name.end() - 1);
-            if (FindFQName(uuid_key) == "ERROR")
-            {
-                AddFQNameCache(uuid_key, obj_type, fq_name);
-            }
+            fq_name_str += name_itr->GetString();
+            fq_name_str += ":";
+        }
+        fq_name_str.erase(fq_name_str.end() - 1);
+        if (FindFQName(uuid) == "ERROR")
+        {
+            AddFQNameCache(uuid, type_str, fq_name_str);
         }
     }
-    else if (oper == "DELETE")
+    else if (oper == "DELETED")
     {
         // Invalidate cache
-        InvalidateFQNameCache(uuid_key);
+        InvalidateFQNameCache(uuid);
     }
 
-    // Request has the uuid with entire path
-    ObjectProcessReq *req = new ObjectProcessReq(oper, uuid, value);
+    // Generate JSON from updated DOM.
+    StringBuffer stringBuffer;
+    Writer<StringBuffer> writer(stringBuffer);
+    cass_json.Accept(writer);
 
-    // GetPartition uses the trimmed uuid so that the same
+    // Request has the uuid
+    ObjectProcessReq *req = new ObjectProcessReq(oper, uuid, stringBuffer.GetString());
+
+    // GetPartition uses the uuid so that the same
     // partition is returned for different requests on the
     // same UUID
-    GetPartition(uuid_key)->Enqueue(req);
+    GetPartition(uuid)->Enqueue(req);
 }
 
 void ConfigK8sClient::EnqueueDBSyncRequest(
@@ -425,15 +756,13 @@ void ConfigK8sClient::EnqueueDBSyncRequest(
     for (UUIDValueList::const_iterator it = uuid_list.begin();
          it != uuid_list.end(); it++)
     {
-        EnqueueUUIDRequest("CREATE", it->first, it->second);
+        EnqueueUUIDRequest("ADDED", it->first, it->second);
     }
 }
 
 bool ConfigK8sClient::UUIDReader()
 {
-
     string next_key;
-    string prefix = "/contrail/";
     bool read_done = false;
     ostringstream os;
 
@@ -445,7 +774,7 @@ bool ConfigK8sClient::UUIDReader()
     {
 
         /* Form the key for the object type to lookup */
-        next_key = prefix + it->c_str();
+        next_key = it->c_str();
         os.str("");
         os << next_key << 1;
 
@@ -494,15 +823,7 @@ bool ConfigK8sClient::UUIDReader()
                        * Parse the json string to get uuid and value
                        */
                     next_key = iter->first;
-                    if (!boost::starts_with(next_key, "/contrail/"))
-                    {
-                        CONFIG_CLIENT_WARN(ConfigClientMgrWarning,
-                                           "K8S SM: Non-contrail uuid: " + next_key + " received");
-                    }
-                    else
-                    {
-                        uuid_list.push_back(make_pair(iter->first, iter->second));
-                    }
+                    uuid_list.push_back(make_pair(iter->first, iter->second));
                 }
 
                 /**
@@ -639,18 +960,12 @@ bool ConfigK8sPartition::ObjectProcessReqHandler(ObjectProcessReq *req)
   * Add the UUID key/value pair to the process list.
   */
 void ConfigK8sPartition::AddUUIDToProcessRequestMap(const string &oper,
-                                                    const string &uuid_key,
+                                                    const string &uuid,
                                                     const string &value_str)
 {
     pair<UUIDProcessRequestMap::iterator, bool> ret;
     bool trigger = uuid_process_request_map_.empty();
 
-    /**
-      * Get UUID from uuid_key which contains the entire path
-      * and insert into uuid_process_request_map_
-      */
-    size_t front_pos = uuid_key.rfind('/');
-    string uuid = uuid_key.substr(front_pos + 1);
     boost::shared_ptr<UUIDProcessRequestType> req(
         new UUIDProcessRequestType(oper, uuid, value_str));
     ret = uuid_process_request_map_.insert(make_pair(client()->GetUUID(uuid), req));
@@ -674,8 +989,8 @@ void ConfigK8sPartition::AddUUIDToProcessRequestMap(const string &oper,
           * For other cases (CREATE/UPDATE) replace the entry with the
           * new value and oper.
           */
-        if ((oper == "DELETE") &&
-            (ret.first->second->oper == "CREATE"))
+        if ((oper == "DELETED") &&
+            (ret.first->second->oper == "ADDED"))
         {
             uuid_process_request_map_.erase(ret.first);
             client()->PurgeFQNameCache(uuid);
@@ -851,7 +1166,7 @@ bool ConfigK8sPartition::UUIDCacheEntry::K8sReadRetryTimerExpired(
 {
     CHECK_CONCURRENCY("config_client::Reader");
     parent_->client()->EnqueueUUIDRequest(
-        "UPDATE", parent_->client()->uuid_str(uuid), value);
+        "MODIFIED", parent_->client()->uuid_str(uuid), value);
     retry_count_++;
     CONFIG_CLIENT_DEBUG(ConfigClientReadRetry, "timer expired ", uuid);
     return false;
@@ -880,16 +1195,11 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
                                              bool add_change,
                                              UUIDCacheEntry *cache)
 {
-
     // Get obj_type from cache.
     const string &obj_type = cache->GetObjType();
 
     // string to get the type field.
     string type_str;
-
-    // bool to indicate if an update to ifmap_server is
-    // necessary.
-    bool notify_update = false;
 
     // Walk the document, remove unwanted properties and do
     // needed fixup for the others.
@@ -898,32 +1208,7 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
 
     while (itr != doc.MemberEnd())
     {
-
         string key = itr->name.GetString();
-
-        /*
-         * Indicate need for update since document has
-         * at least one field other than fq_name or
-         * obj_type to be updated.
-         */
-        if (!notify_update &&
-            key.compare("type") != 0 &&
-            key.compare("fq_name") != 0)
-        {
-            notify_update = true;
-        }
-
-        /**
-          *  Properties like perms2 has no importance to control-node/dns
-          *  This property is present on each config object. Hence skipping
-          *  such properties gives performance improvement.
-          */
-        if (ConfigClientManager::skip_properties.find(key) !=
-            ConfigClientManager::skip_properties.end())
-        {
-            itr = doc.EraseMember(itr);
-            continue;
-        }
 
         /**
           * Get the type string. This will be used as the key.
@@ -1101,13 +1386,6 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
             itr++;
     }
 
-    if (!notify_update)
-    {
-        CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-                            "K8S SM: Nothing to update");
-        return true;
-    }
-
     StringBuffer sb1;
     Writer<StringBuffer> writer1(sb1);
     Document refDoc;
@@ -1194,7 +1472,7 @@ void ConfigK8sPartition::ProcessUUIDDelete(
     client()->PurgeFQNameCache(uuid_key);
 }
 
-void ConfigK8sPartition::ProcessUUIDUpdate(const string &uuid_key,
+void ConfigK8sPartition::ProcessUUIDUpdate(const string &uuid,
                                            const string &value_str)
 {
     /**
@@ -1204,7 +1482,7 @@ void ConfigK8sPartition::ProcessUUIDUpdate(const string &uuid_key,
       * If cache entry already present, update the timestamp.
       */
     bool is_new = false;
-    UUIDCacheEntry *cache = GetUUIDCacheEntry(uuid_key,
+    UUIDCacheEntry *cache = GetUUIDCacheEntry(uuid,
                                               value_str,
                                               is_new);
 
@@ -1249,9 +1527,9 @@ void ConfigK8sPartition::ProcessUUIDUpdate(const string &uuid_key,
     {
         CONFIG_CLIENT_WARN(ConfigClientGetRowError,
                            "fq_name or type not present for ",
-                           "obj_uuid_table with uuid: ", uuid_key);
-        cache->DisableK8sReadRetry(uuid_key);
-        ProcessUUIDDelete(uuid_key);
+                           "obj_uuid_table with uuid: ", uuid);
+        cache->DisableK8sReadRetry(uuid);
+        ProcessUUIDDelete(uuid);
         return;
     }
 
@@ -1281,8 +1559,8 @@ void ConfigK8sPartition::ProcessUUIDUpdate(const string &uuid_key,
             string mode = itr->value.GetString();
             if (!mode.empty())
             {
-                client()->PurgeFQNameCache(uuid_key);
-                DeleteUUIDCacheEntry(uuid_key);
+                client()->PurgeFQNameCache(uuid);
+                DeleteUUIDCacheEntry(uuid);
                 return;
             }
             itr = updDoc.EraseMember(itr);
@@ -1360,21 +1638,21 @@ void ConfigK8sPartition::ProcessUUIDUpdate(const string &uuid_key,
       * When adding/updating properties, if there is
       * an error, retry after a while.
       */
-    if (!GenerateAndPushJson(uuid_key,
+    if (!GenerateAndPushJson(uuid,
                              updDoc,
                              true,
                              cache))
     {
-        cache->EnableK8sReadRetry(uuid_key, value_str);
+        cache->EnableK8sReadRetry(uuid, value_str);
         cache->SetJsonString("retry");
     }
     else
     {
-        cache->DisableK8sReadRetry(uuid_key);
+        cache->DisableK8sReadRetry(uuid);
     }
     if (!is_new)
     {
-        GenerateAndPushJson(uuid_key,
+        GenerateAndPushJson(uuid,
                             cacheDoc,
                             false,
                             cache);
@@ -1422,11 +1700,11 @@ bool ConfigK8sPartition::ConfigReader()
 
         boost::shared_ptr<UUIDProcessRequestType> obj_req = it->second;
 
-        if (obj_req->oper == "CREATE" || obj_req->oper == "UPDATE")
+        if (obj_req->oper == "ADDED" || obj_req->oper == "MODIFIED")
         {
             ProcessUUIDUpdate(obj_req->uuid, obj_req->value);
         }
-        else if (obj_req->oper == "DELETE")
+        else if (obj_req->oper == "DELETED")
         {
             ProcessUUIDDelete(obj_req->uuid);
         }

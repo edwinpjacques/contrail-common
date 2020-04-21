@@ -159,10 +159,10 @@ private:
 
     bool ObjectProcessReqHandler(ObjectProcessReq *req);
     void AddUUIDToProcessRequestMap(const string &oper,
-                                    const string &uuid_key,
+                                    const string &uuid,
                                     const string &value_str);
     bool ConfigReader();
-    void ProcessUUIDUpdate(const string &uuid_key,
+    void ProcessUUIDUpdate(const string &uuid,
                            const string &value_str);
     void ProcessUUIDDelete(const string &uuid_key);
     virtual bool GenerateAndPushJson(
@@ -172,7 +172,6 @@ private:
         UUIDCacheEntry *cache);
     void RemoveObjReqEntry(string &uuid);
 
-    //
     boost::shared_ptr<TaskTrigger> config_reader_;
 
     // Pointer to incoming work for this partition (thread).
@@ -234,6 +233,33 @@ public:
         disable_watch_ = disable;
     }
 
+    // Persist a value to a string.
+    // This is not terribly efficient since it constructs the return value.
+    static string JsonToString(const Value& jsonValue);
+
+    // Convert a UUID into a pair of longs in big-endian format.
+    // Sets longs[0] are the most-significant bytes, 
+    // and longs[1] to the least-significant bytes.
+    static void UuidToLongLongs(
+        const string& uuid, unsigned long long longs[]);
+
+    // Convert a TypeName or fieldName to type_name or field_name
+    static const string K8sNameConvert(
+        const char* type_name, unsigned length);
+
+    // Convert a K8s JSON into Cassandra JSON
+    static void K8sJsonConvert(
+        const Document& k8s_dom, Document& cass_dom);
+
+    // Adds a K8s ref(s) to a Cassandra dom
+    static void K8sJsonAddRefs(
+        Value::ConstMemberIterator& refs, Document& cass_dom);
+
+    // Adds a member (recursively) from K8s dom into a Cassandra dom.
+    static void K8sJsonMemberConvert(
+        Value::ConstMemberIterator& member, 
+        Value& dom, Document::AllocatorType& alloc);
+    
 protected:
     typedef pair<string, string> UUIDValueType;
     typedef list<UUIDValueType> UUIDValueList;
