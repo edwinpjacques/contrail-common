@@ -111,7 +111,7 @@ void ConfigClientManager::SetUp() {
     config_json_parser_->Init(this);
     thread_count_ = GetNumConfigReader();
     end_of_rib_computed_at_ = UTCTimestampUsec();
-    if (config_options_.config_db_use_etcd) {
+    if (config_options_.config_db_use_k8s) {
 #ifdef CONTRAIL_K8S_CONFIG
         config_db_client_.reset(ConfigFactory::Create<ConfigK8sClient>
                                 (this, evm_, config_options_,
@@ -239,7 +239,7 @@ void ConfigClientManager::PostShutdown() {
     // Create new config db client and amqp client
     // Delete of config db client object guarantees the flusing of
     // object uuid cache and uuid read request list.
-    if (config_options_.config_db_use_etcd) {
+    if (config_options_.config_db_use_k8s) {
 #ifdef CONTRAIL_K8S_CONFIG
         config_db_client_.reset(ConfigFactory::Create<ConfigK8sClient>
                                 (this, evm_, config_options_,
@@ -283,7 +283,7 @@ bool ConfigClientManager::InitConfigClient() {
     }
 
     // Common code path for both init/reinit
-    if (config_options_.config_db_use_etcd) {
+    if (config_options_.config_db_use_k8s) {
 #ifdef CONTRAIL_K8S_CONFIG
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
             "Config Client Mgr SM: Start K8S Watcher");

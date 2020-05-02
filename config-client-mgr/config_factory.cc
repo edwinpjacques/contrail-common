@@ -27,8 +27,8 @@ FACTORY_STATIC_REGISTER(ConfigFactory, ConfigK8sPartition,
 #include "config_k8s_client.h"
 FACTORY_STATIC_REGISTER(ConfigFactory, ConfigK8sClient,
                         ConfigK8sClient);
-#include "database/etcd/eql_if.h"
-FACTORY_STATIC_REGISTER(ConfigFactory, EtcdIf, EtcdIf);
+#include "database/k8s/k8s_client.h"
+FACTORY_STATIC_REGISTER(ConfigFactory, K8sClient, K8sClient);
 #endif
 
 #include "database/cassandra/cql/cql_if.h"

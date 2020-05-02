@@ -8,7 +8,7 @@
 #include <boost/ptr_container/ptr_map.hpp>
 #include <boost/shared_ptr.hpp>
 
-#include "database/etcd/eql_if.h"
+#include "database/k8s/k8s_client.h"
 
 #include <list>
 #include <map>
@@ -27,8 +27,7 @@
 using namespace std;
 using contrail_rapidjson::Document;
 using contrail_rapidjson::Value;
-using etcd::etcdql::EtcdIf;
-using etcd::etcdql::EtcdResponse;
+using k8s::client::K8sClient;
 
 class EventManager;
 class ConfigClientManager;
@@ -43,7 +42,7 @@ public:
     ConfigK8sPartition(ConfigK8sClient *client, size_t idx);
     virtual ~ConfigK8sPartition();
 
-    typedef boost::shared_ptr<WorkQueue<ObjectProcessReq *>>
+    typedef std::unique_ptr<WorkQueue<ObjectProcessReq *>>
         UUIDProcessRequestQPtr;
 
     class UUIDCacheEntry : public ObjectCacheEntry
@@ -53,18 +52,12 @@ public:
                        const string &value_str,
                        uint64_t last_read_tstamp)
             : ObjectCacheEntry(last_read_tstamp),
-              retry_count_(0),
-              retry_timer_(NULL),
               json_str_(value_str),
               parent_(parent)
         {
         }
 
         ~UUIDCacheEntry();
-
-        void EnableK8sReadRetry(const string uuid,
-                                const string value);
-        void DisableK8sReadRetry(const string uuid);
 
         const string &GetJsonString() const { return json_str_; }
         void SetJsonString(const string &value_str)
@@ -78,32 +71,13 @@ public:
         }
         bool ListOrMapPropEmpty(const string &prop) const;
 
-        uint32_t GetRetryCount() const
-        {
-            return retry_count_;
-        }
-        bool IsRetryTimerCreated() const
-        {
-            return (retry_timer_ != NULL);
-        }
-        bool IsRetryTimerRunning() const;
-        Timer *GetRetryTimer() { return retry_timer_; }
-
     private:
         friend class ConfigK8sJsonPartitionTest;
-        bool K8sReadRetryTimerExpired(const string uuid,
-                                      const string value);
-        void K8sReadRetryTimerErrorHandler();
         typedef map<string, bool> PropEmptyMap;
         PropEmptyMap prop_empty_map_;
-        uint32_t retry_count_;
-        Timer *retry_timer_;
         string json_str_;
         ConfigK8sPartition *parent_;
     };
-
-    static const uint32_t kMaxUUIDRetryTimePowOfTwo = 20;
-    static const uint32_t kMinUUIDRetryTimeMSec = 100;
 
     typedef boost::ptr_map<string, UUIDCacheEntry> UUIDCacheMap;
 
@@ -118,7 +92,6 @@ public:
     {
         uuid_cache_map_.erase(uuid);
     }
-    virtual int UUIDRetryTimeInMSec(const UUIDCacheEntry *obj) const;
 
     void FillUUIDToObjCacheInfo(const string &uuid,
                                 UUIDCacheMap::const_iterator uuid_iter,
@@ -146,13 +119,13 @@ private:
     {
         UUIDProcessRequestType(const string &in_oper,
                                const string &in_uuid,
-                               const string &in_value)
-            : oper(in_oper), uuid(in_uuid), value(in_value)
+                               const string &in_value_str)
+            : oper(in_oper), uuid(in_uuid), value_str(in_value_str)
         {
         }
         string oper;
         string uuid;
-        string value;
+        string value_str;
     };
 
     typedef map<string, boost::shared_ptr<UUIDProcessRequestType>> UUIDProcessRequestMap;
@@ -180,7 +153,7 @@ private:
     // Map of UUID to process requests.
     UUIDProcessRequestMap uuid_process_request_map_;
 
-    // Map of UUID to JSON data.  Maintains last_read_tstamp_ retry metadata.
+    // Map of UUID to JSON data.
     UUIDCacheMap uuid_cache_map_;
 
     ConfigK8sClient *config_client_;
@@ -204,8 +177,14 @@ public:
     // Called by InitConfigClient() to initialize bulk synchronization.
     virtual void InitDatabase();
     void BulkSyncDone();
-    void EnqueueUUIDRequest(string oper, string obj_type,
-                            string uuid_str);
+
+    typedef enum {
+        INVALID,
+        ADDED,
+        MODIFIED,
+        DELETED
+    } WatchEventType;
+    void EnqueueUUIDRequest(string oper, string uuid, string value);
 
     ConfigK8sPartition *GetPartition(const string &uuid);
     const ConfigK8sPartition *GetPartition(const string &uuid) const;
@@ -225,7 +204,7 @@ public:
                                       const string &lookup_key);
 
     bool IsTaskTriggered() const;
-    virtual void ProcessResponse(EtcdResponse resp);
+    virtual void ProcessResponse(std::string type, K8sClient::DomPtr domPtr);
 
     // For testing
     static void set_watch_disable(bool disable)
@@ -244,8 +223,11 @@ public:
         const string& uuid, unsigned long long longs[]);
 
     // Convert a TypeName or fieldName to type_name or field_name
-    static const string K8sNameConvert(
+    static string K8sNameConvert(
         const char* type_name, unsigned length);
+
+    // Convert a Cassandra type name into a Kubernetes type name
+    static string CassTypeToK8sKind(const std::string& cass_type);
 
     // Convert a K8s JSON into Cassandra JSON
     static void K8sJsonConvert(
@@ -259,13 +241,13 @@ public:
     static void K8sJsonMemberConvert(
         Value::ConstMemberIterator& member, 
         Value& dom, Document::AllocatorType& alloc);
-    
-protected:
-    typedef pair<string, string> UUIDValueType;
-    typedef list<UUIDValueType> UUIDValueList;
 
+    static const std::string api_group_;
+    static const std::string api_version_;
+
+protected:
     virtual bool BulkDataSync();
-    void EnqueueDBSyncRequest(const UUIDValueList &uuid_list);
+    void EnqueueDBSyncRequest(K8sClient::DomPtr domPtr);
 
     virtual int HashUUID(const std::string &uuid_str) const;
     int num_workers() const { return num_workers_; }
@@ -278,7 +260,8 @@ private:
     // A Job for watching changes to config stored in K8s
     class K8sWatcher;
 
-    bool InitRetry();
+    // Base URL for K8s API
+    static const std::string k8s_api_url_base_;
 
     // BulkDataSync of all object types from K8s
     bool UUIDReader();
@@ -290,7 +273,7 @@ private:
     // For testing
     static bool disable_watch_;
 
-    boost::scoped_ptr<EtcdIf> eqlif_;
+    boost::scoped_ptr<K8sClient> k8s_client_;
     const int num_workers_;
     PartitionList partitions_;
     boost::scoped_ptr<TaskTrigger> uuid_reader_;

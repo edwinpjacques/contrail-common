@@ -13,8 +13,14 @@
 namespace cass { namespace cql { class CqlIf; } }
 using cass::cql::CqlIf;
 
-namespace etcd { namespace etcdql { class EtcdIf; } }
-using etcd::etcdql::EtcdIf;
+namespace k8s { namespace client { class K8sClient; } }
+using k8s::client::K8sClient;
+
+namespace web { class uri;
+    namespace http { namespace client { class http_client_config; } }
+}
+using web::uri;
+using web::http::client::http_client_config;
 
 class ConfigAmqpChannel;
 class ConfigCassandraClient;
@@ -42,9 +48,12 @@ class ConfigFactory : public Factory<ConfigFactory> {
                     int);
     FACTORY_TYPE_N2(ConfigFactory, ConfigK8sPartition,
                     ConfigK8sClient *, size_t);
-    FACTORY_TYPE_N3(ConfigFactory, EtcdIf,
-                    const std::vector<std::string> &,
-                    const int, bool);
+    FACTORY_TYPE_N5(ConfigFactory, K8sClient,
+                    uri &,
+                    http_client_config &,
+                    const std::string &,
+                    const std::string &,
+                    size_t);
 };
 
 #endif  // __CONFIG__CONFIG_FACTORY_H__

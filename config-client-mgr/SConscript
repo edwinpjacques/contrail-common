@@ -16,7 +16,7 @@ k8s_incl = os.environ.get('CONTRAIL_K8S_CONFIG');
 
 if k8s_incl:
     env.Append(CXXFLAGS = '-Wall -DCONTRAIL_K8S_CONFIG -std=c++11')
-    env.Prepend(LIBS=['etcdql'])
+    env.Prepend(LIBS=['k8s_client', 'cpprest'])
 
 env.Prepend(LIBS=['io', 'base', 'cassandra_cql', 'cassandra', 'gendb', 'SimpleAmqpClient'])
 

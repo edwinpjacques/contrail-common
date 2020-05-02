@@ -29,7 +29,7 @@ class ObjectProcessReq {
 
     std::string oper_;
     std::string uuid_str_;
-    std::string value_; // obj_type for Cassandra/json_value for ETCD
+    std::string value_; // obj_type for Cassandra/json_value for K8S
 
  private:
     DISALLOW_COPY_AND_ASSIGN(ObjectProcessReq);

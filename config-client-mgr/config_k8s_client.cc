@@ -2,8 +2,6 @@
  * Copyright (c) 2018 Juniper Networks, Inc. All rights reserved.
  */
 
-#include "config-client-mgr/config_k8s_client.h"
-
 #include <sandesh/request_pipeline.h>
 
 #include "rapidjson/writer.h"
@@ -38,6 +36,8 @@
 #include "config_client_show_types.h"
 #include "sandesh/common/vns_constants.h"
 
+#include "config-client-mgr/config_k8s_client.h"
+
 using contrail::regex;
 using contrail::regex_match;
 using contrail::regex_search;
@@ -47,10 +47,12 @@ using contrail_rapidjson::SizeType;
 using contrail_rapidjson::StringBuffer;
 using contrail_rapidjson::Value;
 using contrail_rapidjson::Writer;
-using etcd::etcdql::EtcdIf;
-using etcd::etcdql::EtcdResponse;
+using k8s::client::K8sClient;
 
 bool ConfigK8sClient::disable_watch_;
+
+const std::string ConfigK8sClient::api_group_ = "core.contrail.juniper.net";
+const std::string ConfigK8sClient::api_version_ = "v1alpha1";
 
 /**
   * K8S Watcher class to enable watching for any changes
@@ -80,7 +82,7 @@ public:
 
 private:
     ConfigK8sClient *k8s_client_;
-    void ProcessResponse(EtcdResponse resp);
+    void ProcessResponse(std::string type, K8sClient::DomPtr domPtr);
 };
 
 ConfigK8sClient::ConfigK8sClient(ConfigClientManager *mgr,
@@ -90,10 +92,20 @@ ConfigK8sClient::ConfigK8sClient(ConfigClientManager *mgr,
     : ConfigDbClient(mgr, evm, options),
       num_workers_(num_workers)
 {
-    eqlif_.reset(ConfigFactory::Create<EtcdIf>(config_db_ips(),
-                                               GetFirstConfigDbPort(),
-                                               false));
+    web::http::uri_builder uri_builder;
+    uri_builder.set_scheme("http");
+    uri_builder.set_host(config_db_ips().empty() ? "127.0.0.1" : config_db_ips()[0]);
+    uri_builder.set_port(GetFirstConfigDbPort());
 
+    web::http::client::http_client_config config;
+    web::uri uri = uri_builder.to_uri();
+
+    k8s_client_.reset(ConfigFactory::Create<K8sClient>(
+        uri,
+        config,
+        api_group_,
+        api_version_,
+        this->GetNumReadRequestToBunch()));
     InitConnectionInfo();
     bulk_sync_status_ = 0;
 
@@ -141,9 +153,10 @@ void ConfigK8sClient::StartWatcher()
 }
 
 void ConfigK8sClient::K8sWatcher::ProcessResponse(
-    EtcdResponse resp)
+    std::string type,
+    K8sClient::DomPtr domPtr)
 {
-    client()->ProcessResponse(resp);
+    client()->ProcessResponse(type, domPtr);
 }
 
 bool ConfigK8sClient::K8sWatcher::Run()
@@ -162,20 +175,20 @@ bool ConfigK8sClient::K8sWatcher::Run()
     }
 
     /**
-      * Invoke etcd client library to watch for changes.
+      * Invoke k8s client library to watch for changes.
       */
-    client()->eqlif_->Watch("/contrail/",
+    client()->k8s_client_->Watch("/contrail/",
                             boost::bind(&ConfigK8sClient::K8sWatcher::ProcessResponse,
-                                        this, _1));
+                                        this, _1, _2));
 
     return true;
 }
 
-void ConfigK8sClient::ProcessResponse(EtcdResponse resp)
+void ConfigK8sClient::ProcessResponse(std::string type, K8sClient::DomPtr domPtr)
 {
     /**
       * If reinit is triggerred, don't consume the message.
-      * Also, stop etcd watch.
+      * Also, stop k8s watch.
       */
     if (mgr()->is_reinit_triggered())
     {
@@ -183,7 +196,7 @@ void ConfigK8sClient::ProcessResponse(EtcdResponse resp)
             ConfigClientMgrDebug,
             "K8S Watcher SM: ProcessResponse: re init triggered,"
             " stop watching");
-        eqlif_->StopWatch();
+        k8s_client_->StopWatch();
         return;
     }
 
@@ -194,23 +207,32 @@ void ConfigK8sClient::ProcessResponse(EtcdResponse resp)
     mgr()->WaitForEndOfConfig();
 
     /**
-      * Check for errors and enqueue UUID update/delete request.
-      * Also update FQName cache.
+      * Update FQName cache.
       */
-    assert(resp.err_code() == 0);
+    Value::ConstMemberIterator metadata = domPtr->FindMember("metadata");
+    if (metadata == metadata->value.MemberEnd())
+    {
+        CONFIG_CLIENT_DEBUG(
+            ConfigClientMgrDebug,
+            "K8S Watcher SM: ProcessResponse: metadata missing: " + 
+                JsonToString(*domPtr));
+        return;
+    }
 
-    if (resp.action() == 0)
+    Value::ConstMemberIterator uid = metadata->value.FindMember("uid");
+    if (uid == metadata->value.MemberEnd())
     {
-        EnqueueUUIDRequest("ADDED", resp.key(), resp.value());
-    }
-    else if (resp.action() == 1)
-    {
-        EnqueueUUIDRequest("MODIFIED", resp.key(), resp.value());
-    }
-    else if (resp.action() == 2)
-    {
-        EnqueueUUIDRequest("DELETED", resp.key(), resp.value());
-    }
+        CONFIG_CLIENT_DEBUG(
+            ConfigClientMgrDebug,
+            "K8S Watcher SM: ProcessResponse: uid missing: " + 
+                JsonToString(*domPtr));
+        return;
+    }    
+
+    this->EnqueueUUIDRequest(
+        type, 
+        uid->value.GetString(), 
+        ConfigK8sClient::JsonToString(*domPtr));
 }
 
 void ConfigK8sClient::InitDatabase()
@@ -219,13 +241,10 @@ void ConfigK8sClient::InitDatabase()
     while (true)
     {
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug, "K8S SM: Db Init");
-        if (!eqlif_->Connect())
+        if (!k8s_client_->Init())
         {
-            CONFIG_CLIENT_DEBUG(ConfigEtcdInitErrorMessage,
+            CONFIG_CLIENT_DEBUG(ConfigK8sClientInitErrorMessage,
                                 "Database initialization failed");
-            if (!InitRetry())
-                return;
-            continue;
         }
         break;
     }
@@ -244,7 +263,7 @@ void ConfigK8sClient::HandleK8sConnectionStatus(bool success,
         process::ConnectionState::GetInstance()->Update(
             process::ConnectionType::DATABASE, "K8S",
             process::ConnectionStatus::UP,
-            eqlif_->endpoints(), "Established K8S connection");
+            k8s_client_->endpoints(), "Established K8S connection");
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
                             "K8S SM: Established K8S connection");
     }
@@ -253,20 +272,10 @@ void ConfigK8sClient::HandleK8sConnectionStatus(bool success,
         process::ConnectionState::GetInstance()->Update(
             process::ConnectionType::DATABASE, "K8S",
             process::ConnectionStatus::DOWN,
-            eqlif_->endpoints(), "Lost K8S connection");
+            k8s_client_->endpoints(), "Lost K8S connection");
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
                             "K8S SM: Lost K8S connection");
     }
-}
-
-bool ConfigK8sClient::InitRetry()
-{
-    CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug, "K8S SM: DB Init Retry");
-    // If reinit is triggered, return false to abort connection attempt
-    if (mgr()->is_reinit_triggered())
-        return false;
-    usleep(GetInitRetryTimeUSec());
-    return true;
 }
 
 string ConfigK8sClient::JsonToString(const Value& jsonValue)
@@ -311,8 +320,36 @@ void ConfigK8sClient::UuidToLongLongs(
     }
 }
 
+// Convert a cassandra type (lowercase separted by underscored) to 
+// name to K8s format (CamelCase).
+string ConfigK8sClient::CassTypeToK8sKind(const std::string& cass_type)
+{
+    string ret;
+    bool last_char_underscore = false;
+    for (size_t i = 0; i < cass_type.length(); ++i)
+    {
+        char c = cass_type[i];
+        if (i == 0 || last_char_underscore)
+        {
+            ret += toupper(c);
+            last_char_underscore = false;
+        }
+        else if (c == '_' || c == '-')
+        {
+            // skip dashes and underscores
+            last_char_underscore = true;
+        }
+        else
+        {
+            ret += c;
+            last_char_underscore = false;
+        }
+    }
+    return ret; 
+}
+
 // Convert a TypeName or fieldName to type_name or field_name
-const string ConfigK8sClient::K8sNameConvert(
+string ConfigK8sClient::K8sNameConvert(
     const char* type_name, unsigned length)
 {
     string ret;
@@ -644,57 +681,57 @@ int ConfigK8sClient::HashUUID(const string &uuid_str) const
     return string_hash(uuid_str) % num_workers_;
 }
 
-void ConfigK8sClient::EnqueueUUIDRequest(string oper,
+void ConfigK8sClient::EnqueueUUIDRequest(string oper, 
                                          string uuid,
                                          string value)
 {
-    Document value_json;
-    value_json.Parse<0>(value.c_str());
-
     // If non-object JSON is received, log a warning and return.
-    if (!value_json.IsObject())
+    Document dom;
+    dom.Parse<0>(value.c_str());
+    if (!dom.IsObject())
     {
-        CONFIG_CLIENT_WARN(ConfigClientMgrWarning, "K8S SM: Received "
-                                                    "non-object json. uuid: " +
-                                                    uuid + " value: " + value + ". Skipping");
+        CONFIG_CLIENT_WARN(
+            ConfigClientMgrWarning, 
+            "K8S SM: Received non-object json. uuid: " + uuid + " value: " 
+            + value + ". Skipping");
         return;
     }
 
-    // Ignore all object without the state "Succes"
-
-    Value::MemberIterator status = value_json.FindMember("status");
-    if (status == value_json.MemberEnd()) {
-        CONFIG_CLIENT_WARN(ConfigClientMgrWarning, "K8S SM: Received "
-                                                    "json object without status field. uuid: " +
-                                                    uuid + " value: " + value + ". Skipping");
+    // Ignore all object without the state "Success"
+    Value::MemberIterator status = dom.FindMember("status");
+    if (status == dom.MemberEnd()) {
+        CONFIG_CLIENT_WARN(
+            ConfigClientMgrWarning, 
+            "K8S SM: Received json object without status field. uuid: " + uuid
+            + " value: " + value + ". Skipping");
         return;
     }
 
     Value::MemberIterator state = status->value.FindMember("state");
     if (state == status->value.MemberEnd()) {
-        CONFIG_CLIENT_WARN(ConfigClientMgrWarning, "K8S SM: Received "
-                                                    "json object without state. uuid: " +
-                                                    uuid + " value: " + value + ". Skipping");
+        CONFIG_CLIENT_WARN(
+            ConfigClientMgrWarning, 
+            "K8S SM: Received json object without state. uuid: " + uuid 
+            + " value: " + value + ". Skipping");
         return;
     }
 
     static const char success_cstr[] = "Success";
     if (strncmp(state->value.GetString(), success_cstr, sizeof(success_cstr)) != 0 ) {
-        CONFIG_CLIENT_WARN(ConfigClientMgrWarning, "K8S SM: Received "
-                                                    "json object with Status != Success. uuid: " +
-                                                    uuid + " value: " + value + ". Skipping");
+        CONFIG_CLIENT_DEBUG(
+            ConfigClientMgrWarning, 
+            "K8S SM: Received json object with Status != Success. uuid: " 
+            + uuid + " value: " + value + ". Skipping");
         return;
     }            
 
-    string before_conversion = JsonToString(value_json);
-    CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug, "K8S SM: BEFORE CONVERSION: " + before_conversion);
+    CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug, "K8S SM: BEFORE CONVERSION: " + value);
 
     // Translate from K8s DOM to internal (Cassandra) format.
     Document cass_json;
-    K8sJsonConvert(value_json, cass_json);
+    K8sJsonConvert(dom, cass_json);
 
-    string after_conversion = JsonToString(cass_json);
-    CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug, "K8S SM: AFTER CONVERSION: " + after_conversion);
+    CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug, "K8S SM: AFTER CONVERSION: " + JsonToString(cass_json));
 
     if (oper == "ADDED" || oper == "MODIFIED")
     {   
@@ -704,7 +741,7 @@ void ConfigK8sClient::EnqueueUUIDRequest(string oper,
         {
             CONFIG_CLIENT_WARN(ConfigClientMgrWarning, "K8S SM: Received "
                                                         "json object without type specified. uuid: " +
-                                                        uuid + " object: " + after_conversion + ". Skipping");
+                                                        uuid + " object: " + JsonToString(cass_json) + ". Skipping");
             return;
         }
         string type_str = type->value.GetString();
@@ -713,7 +750,7 @@ void ConfigK8sClient::EnqueueUUIDRequest(string oper,
         {
             CONFIG_CLIENT_WARN(ConfigClientMgrWarning, "K8S SM: Received "
                                                         "json object without fq_name specified. uuid: " +
-                                                        uuid + " object: " + after_conversion + ". Skipping");
+                                                        uuid + " object: " + JsonToString(cass_json) + ". Skipping");
             return;
         }
         string fq_name_str;
@@ -736,13 +773,8 @@ void ConfigK8sClient::EnqueueUUIDRequest(string oper,
         InvalidateFQNameCache(uuid);
     }
 
-    // Generate JSON from updated DOM.
-    StringBuffer stringBuffer;
-    Writer<StringBuffer> writer(stringBuffer);
-    cass_json.Accept(writer);
-
     // Request has the uuid
-    ObjectProcessReq *req = new ObjectProcessReq(oper, uuid, stringBuffer.GetString());
+    ObjectProcessReq *req = new ObjectProcessReq(oper, uuid, ConfigK8sClient::JsonToString(cass_json));
 
     // GetPartition uses the uuid so that the same
     // partition is returned for different requests on the
@@ -751,128 +783,54 @@ void ConfigK8sClient::EnqueueUUIDRequest(string oper,
 }
 
 void ConfigK8sClient::EnqueueDBSyncRequest(
-    const UUIDValueList &uuid_list)
+    K8sClient::DomPtr domPtr)
 {
-    for (UUIDValueList::const_iterator it = uuid_list.begin();
-         it != uuid_list.end(); it++)
-    {
-        EnqueueUUIDRequest("ADDED", it->first, it->second);
-    }
+    this->EnqueueUUIDRequest(
+        "ADDED", 
+        K8sClient::UidFromObject(*domPtr), 
+        ConfigK8sClient::JsonToString(*domPtr));
 }
 
 bool ConfigK8sClient::UUIDReader()
 {
-    string next_key;
-    bool read_done = false;
-    ostringstream os;
-
     // Iterate through all of the object types
     for (ConfigClientManager::ObjectTypeList::const_iterator it =
              mgr()->config_json_parser()->ObjectTypeListToRead().begin();
          it != mgr()->config_json_parser()->ObjectTypeListToRead().end();
          it++)
     {
+        // Convert cassandra type name to Kubernetes
+        string kind = CassTypeToK8sKind(*it);
 
-        /* Form the key for the object type to lookup */
-        next_key = it->c_str();
-        os.str("");
-        os << next_key << 1;
-
-        while (true)
+        // First make sure the backend supports this type
+        if (k8s_client_->kindInfoMap().find(kind) == k8s_client_->kindInfoMap().end())
         {
-            unsigned int num_entries;
+            CONFIG_CLIENT_WARN(ConfigClientMgrWarning, "K8S SM: Type "
+                               + *it + " not supported. Skipping");
+            continue;
+        }
 
-            /**
-              * Ensure that UUIDReader task aborts on reinit trigger.
-              */
-            if (mgr()->is_reinit_triggered())
-            {
-                CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-                                    "K8S SM: Abort UUID reader on reinit trigger");
-                return true;
-            }
-
-            /**
-              * Get number of UUIDs to read at a time
-              */
-            num_entries = GetNumReadRequestToBunch();
-
-            /**
-              * Read num_entries UUIDs at a time
-              */
-            EtcdResponse resp = eqlif_->Get(next_key,
-                                            os.str(),
-                                            num_entries);
-            EtcdResponse::kv_map kvs = resp.kvmap();
-
-            /**
-              * Process read response
-              */
-            if (resp.err_code() == 0)
-            {
-                /**
-                  * Got UUID data for given ObjType
-                  */
-                UUIDValueList uuid_list;
-
-                for (multimap<string, string>::const_iterator iter = kvs.begin();
-                     iter != kvs.end();
-                     ++iter)
-                {
-                    /**
-                       * Parse the json string to get uuid and value
-                       */
-                    next_key = iter->first;
-                    uuid_list.push_back(make_pair(iter->first, iter->second));
-                }
-
-                /**
-                  * Process the UUID response in parallel by assigning
-                  * the UUIDs to partitions.
-                  */
-                EnqueueDBSyncRequest(uuid_list);
-
-                /**
-                  * Get the next key to read for the current ObjType
-                  */
-                next_key += "00";
-
-                /**
-                  * If we read less than what we sought, it means there are
-                  * no more entries for current obj-type. We move to next
-                  * obj-type.
-                  */
-                if (kvs.size() < num_entries)
-                {
-                    break;
-                }
-            }
-            else if (resp.err_code() == 100)
-            {
-                /**
-                  * ObjType not found. Continue reading next ObjType
-                  */
-                break;
-            }
-            else if (resp.err_code() == -1)
-            {
-                /* Test ONLY */
-                read_done = true;
-                break;
-            }
-            else
-            {
-                /**
-                  * RPC failure. Connection down.
-                  * Retry after a while
-                  */
-                HandleK8sConnectionStatus(false);
-                usleep(GetInitRetryTimeUSec());
-            }
-        } //while
-        if (read_done)
+        /**
+         * Ensure that UUIDReader task aborts on reinit trigger.
+         */
+        if (mgr()->is_reinit_triggered())
         {
-            break;
+            CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
+                                "K8S SM: Abort UUID reader on reinit trigger");
+            return true;
+        }
+
+        // Perform the bulk get for this type.
+        web::http::http_response resp;
+    
+        resp = k8s_client_->BulkGet(
+            *it, boost::bind(&ConfigK8sClient::EnqueueDBSyncRequest, this, _1));
+        if (resp.status_code() >= 300)
+        {
+            /**
+                 * RPC failure. Connection down.
+                 */
+            HandleK8sConnectionStatus(false);
         }
     } //for
 
@@ -961,7 +919,7 @@ bool ConfigK8sPartition::ObjectProcessReqHandler(ObjectProcessReq *req)
   */
 void ConfigK8sPartition::AddUUIDToProcessRequestMap(const string &oper,
                                                     const string &uuid,
-                                                    const string &value_str)
+                                                    const string& value_str)
 {
     pair<UUIDProcessRequestMap::iterator, bool> ret;
     bool trigger = uuid_process_request_map_.empty();
@@ -1001,7 +959,7 @@ void ConfigK8sPartition::AddUUIDToProcessRequestMap(const string &oper,
             req.reset();
             ret.first->second->oper = oper;
             ret.first->second->uuid = uuid;
-            ret.first->second->value = value_str;
+            ret.first->second->value_str = value_str;
         }
     }
 }
@@ -1102,83 +1060,6 @@ ConfigK8sPartition::GetUUIDCacheEntry(const string &uuid,
     return uuid_iter->second;
 }
 
-int ConfigK8sPartition::UUIDRetryTimeInMSec(
-    const UUIDCacheEntry *obj) const
-{
-    uint32_t retry_time_pow_of_two =
-        obj->GetRetryCount() > kMaxUUIDRetryTimePowOfTwo ? kMaxUUIDRetryTimePowOfTwo : obj->GetRetryCount();
-    return ((1 << retry_time_pow_of_two) * kMinUUIDRetryTimeMSec);
-}
-
-void ConfigK8sPartition::UUIDCacheEntry::EnableK8sReadRetry(
-    const string uuid,
-    const string value)
-{
-    if (!retry_timer_)
-    {
-        retry_timer_ = TimerManager::CreateTimer(
-            *parent_->client()->event_manager()->io_service(),
-            "UUID retry timer for " + uuid,
-            TaskScheduler::GetInstance()->GetTaskId(
-                "config_client::Reader"),
-            parent_->worker_id_);
-        CONFIG_CLIENT_DEBUG(ConfigClientReadRetry,
-                            "Created UUID read retry timer ", uuid);
-    }
-    retry_timer_->Cancel();
-    retry_timer_->Start(parent_->UUIDRetryTimeInMSec(this),
-                        boost::bind(
-                            &ConfigK8sPartition::UUIDCacheEntry::K8sReadRetryTimerExpired,
-                            this, uuid, value),
-                        boost::bind(
-                            &ConfigK8sPartition::UUIDCacheEntry::K8sReadRetryTimerErrorHandler,
-                            this));
-    CONFIG_CLIENT_DEBUG(ConfigClientReadRetry,
-                        "Start/restart UUID Read Retry timer due to configuration", uuid);
-}
-
-void ConfigK8sPartition::UUIDCacheEntry::DisableK8sReadRetry(
-    const string uuid)
-{
-    CHECK_CONCURRENCY("config_client::Reader");
-    if (retry_timer_)
-    {
-        retry_timer_->Cancel();
-        TimerManager::DeleteTimer(retry_timer_);
-        retry_timer_ = NULL;
-        retry_count_ = 0;
-        CONFIG_CLIENT_DEBUG(ConfigClientReadRetry,
-                            "UUID Read retry timer - deleted timer due to configuration",
-                            uuid);
-    }
-}
-
-bool ConfigK8sPartition::UUIDCacheEntry::IsRetryTimerRunning() const
-{
-    if (retry_timer_)
-        return (retry_timer_->running());
-    return false;
-}
-
-bool ConfigK8sPartition::UUIDCacheEntry::K8sReadRetryTimerExpired(
-    const string uuid,
-    const string value)
-{
-    CHECK_CONCURRENCY("config_client::Reader");
-    parent_->client()->EnqueueUUIDRequest(
-        "MODIFIED", parent_->client()->uuid_str(uuid), value);
-    retry_count_++;
-    CONFIG_CLIENT_DEBUG(ConfigClientReadRetry, "timer expired ", uuid);
-    return false;
-}
-
-void ConfigK8sPartition::UUIDCacheEntry::K8sReadRetryTimerErrorHandler()
-{
-    std::string message = "Timer";
-    CONFIG_CLIENT_WARN(ConfigClientGetRowError,
-                       "UUID Read Retry Timer error ", message, message);
-}
-
 bool ConfigK8sPartition::UUIDCacheEntry::ListOrMapPropEmpty(
     const string &prop) const
 {
@@ -1254,26 +1135,6 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
                     '-', '_');
             doc[key.c_str()].SetString(parent_type.c_str(), a);
         }
-        else if (key.compare("parent_uuid") == 0)
-        {
-
-            /**
-              * Process parent_uuid. For creates/updates, check if
-              * parent fq_name is present. If not, enable retry.
-              */
-
-            if (add_change)
-            {
-                string parent_uuid = doc[key.c_str()].GetString();
-                string parent_fq_name = client()->FindFQName(parent_uuid);
-                if (parent_fq_name == "ERROR")
-                {
-                    CONFIG_CLIENT_DEBUG(ConfigClientReadRetry,
-                                        "Parent fq_name not available for ", uuid);
-                    return false;
-                }
-            }
-        }
         else if (key.compare("bgpaas_session_attributes") == 0)
         {
 
@@ -1301,7 +1162,7 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
                 client()->mgr()->config_json_parser()->IsLinkWithAttr(obj_type, ref_type);
 
             // Get a pointer to the _refs json Value
-            Value *v = &doc[key.c_str()];
+            Value *v = &(doc[key.c_str()]);
 
             assert(v->IsArray());
             for (SizeType i = 0; i < v->Size(); i++)
@@ -1330,29 +1191,6 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
                 Value &uuidVal = va["uuid"];
                 const string ref_uuid = uuidVal.GetString();
                 string ref_fq_name = client()->FindFQName(ref_uuid);
-
-                if (ref_fq_name == "ERROR")
-                {
-                    // ref_fq_name not in FQNameCache
-                    // If we cannot find ref_fq_name in the doc
-                    // as well, return false to enable retry.
-                    if (!va.HasMember("to"))
-                    {
-                        CONFIG_CLIENT_DEBUG(ConfigClientReadRetry,
-                                            "Ref fq_name not available for ", uuid);
-                        return false;
-                    }
-
-                    ref_fq_name.clear();
-                    const Value &name = va["to"];
-                    for (Value::ConstValueIterator itr = name.Begin();
-                         itr != name.End(); ++itr)
-                    {
-                        ref_fq_name += itr->GetString();
-                        ref_fq_name += ":";
-                    }
-                    ref_fq_name.erase(ref_fq_name.end() - 1);
-                }
 
                 // Remove ref_fq_name from doc and re-add the
                 // string formatted fq_name.
@@ -1429,18 +1267,6 @@ void ConfigK8sPartition::ProcessUUIDDelete(
     UUIDCacheEntry *cache = uuid_iter->second;
 
     /**
-      * If retry timer is running, the original create/update
-      * for the UUID has not been processed. Stop the timer,
-      * and purge the FQName cache entry.
-      */
-    if (cache->IsRetryTimerRunning())
-    {
-        cache->DisableK8sReadRetry(uuid_key);
-        client()->PurgeFQNameCache(uuid_key);
-        return;
-    }
-
-    /**
       * For CREATES, we could get here in erroneous
       * cases as well. For instance, fq_name or type field not
       * present in the update received. For such cases,
@@ -1496,15 +1322,6 @@ void ConfigK8sPartition::ProcessUUIDUpdate(const string &uuid,
       * deleted.
       */
     string cache_json_str = cache->GetJsonString();
-    if (cache_json_str.compare("retry") == 0)
-    {
-        // If we are retrying due to ref or parent
-        // fq_name not available previously, cache
-        // json_str would have been cleared and set
-        // to retry. Process now like a new create.
-        cache_json_str = value_str;
-        is_new = true;
-    }
     Document cacheDoc;
     cacheDoc.Parse<0>(cache_json_str.c_str());
 
@@ -1528,7 +1345,6 @@ void ConfigK8sPartition::ProcessUUIDUpdate(const string &uuid,
         CONFIG_CLIENT_WARN(ConfigClientGetRowError,
                            "fq_name or type not present for ",
                            "obj_uuid_table with uuid: ", uuid);
-        cache->DisableK8sReadRetry(uuid);
         ProcessUUIDDelete(uuid);
         return;
     }
@@ -1638,18 +1454,10 @@ void ConfigK8sPartition::ProcessUUIDUpdate(const string &uuid,
       * When adding/updating properties, if there is
       * an error, retry after a while.
       */
-    if (!GenerateAndPushJson(uuid,
-                             updDoc,
-                             true,
-                             cache))
-    {
-        cache->EnableK8sReadRetry(uuid, value_str);
-        cache->SetJsonString("retry");
-    }
-    else
-    {
-        cache->DisableK8sReadRetry(uuid);
-    }
+    GenerateAndPushJson(uuid,
+                        updDoc,
+                        true,
+                        cache);
     if (!is_new)
     {
         GenerateAndPushJson(uuid,
@@ -1702,7 +1510,7 @@ bool ConfigK8sPartition::ConfigReader()
 
         if (obj_req->oper == "ADDED" || obj_req->oper == "MODIFIED")
         {
-            ProcessUUIDUpdate(obj_req->uuid, obj_req->value);
+            ProcessUUIDUpdate(obj_req->uuid, obj_req->value_str);
         }
         else if (obj_req->oper == "DELETED")
         {
