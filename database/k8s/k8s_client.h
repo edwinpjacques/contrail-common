@@ -1,11 +1,22 @@
+//
+// Copyright (c) 2020 Juniper Networks, Inc. All rights reserved.
+//
+
 #ifndef DATABASE_K8S_CLIENT_H_
 #define DATABASE_K8S_CLIENT_H_
 
-#include "cpprest/http_client.h"
-#include "rapidjson/document.h"
+#include <memory>
 #include <string>
-#include <boost/function.hpp>
-#include <boost/asio/ip/tcp.hpp>
+#include <functional>
+#include <map>
+#include <vector>
+
+#include <rapidjson/document.h>
+#include <restclient-cpp/restclient.h>
+
+#include "k8s_url.h"
+#include "k8s_watcher.h"
+#include "k8s_client_types.h"
 
 namespace k8s {
 namespace client {
@@ -21,35 +32,17 @@ namespace client {
 class K8sClient {
 public:
     /**
-     * Types (kinds)
-     */
-    typedef std::shared_ptr<contrail_rapidjson::Document> DomPtr;
-    
-    typedef boost::function<void (DomPtr object)> GetCb;
-    typedef boost::function<void (std::string type, DomPtr object)> WatchCb;
-    
-    struct KindInfo {
-        std::string         name;
-        std::string         singularName;
-        bool                namespaced;
-        std::string         kind;
-        std::string         resourceVersion;
-        pplx::task<void>    watchTask;
-    };
- 
-    typedef std::map<const std::string, KindInfo> KindInfoMap;
-
-    typedef boost::asio::ip::tcp::endpoint Endpoint;
-
-    /**
      * Constructor that creates a Kubernetes client object.
-     * @param host The IP address of the Kubernetes server
-     * @param port The port to connect to
+     * @param k8sUrl     Service address information for the 
+     *                   Kubernetes server.
+     * @param caCertFile CA cert file path to use for HTTPS.
+     *                   Extension must be the type of cert.
+     *                   e.g. "/path/cert.pem" or "/path/cert.p12"
+     * @param fetchLimit Maximum number of items to receive at once
+     *                   when doing a get.
      */
-    K8sClient(const web::http::uri &host,
-              const web::http::client::http_client_config &config,
-              const std::string &apiGroup,
-              const std::string &apiVersion,
+    K8sClient(const K8sUrl &k8sUrl,
+              const std::string &caCertFile,
               size_t fetchLimit=defaultFetchLimit);
 
     /**
@@ -59,10 +52,10 @@ public:
 
     /**
      * Initialize the client by getting information on the types supported
-     * by this apiGroup.  Returns "true" if initialization is successful,
-     * otherwise returns false.
+     * by this apiGroup.  Returns 0 if initialization is successful,
+     * otherwise returns non-zero.
      */
-    virtual bool Init();
+    virtual int Init();
 
     /**
      * Default maximum number of items to fetch at a time.
@@ -72,80 +65,95 @@ public:
     /**
      * Get all Kubernetes objects of a particular type.
      * Blocks until all the data is retrieved.
+     * Returns HTTP response code.  Does not throw.
      * @param kind Type name to get (e.g.-- project)
      * @param getCb Callback to invoke for each object that is retrieved.
      *              Takes as an argument a DomPtr.
      */
-    virtual web::http::http_response BulkGet(const std::string &kind,
-                                             GetCb getCb);
+    virtual int BulkGet(const std::string &kind, GetCb getCb);
 
     /**
      * Watch for changes for a particular type since the last BulkGet.
      * Processing will continue in the background.  
-     * @param kind Type to watch
+     * @param kind kind to watch (e.g.-- "VirtualMachine")
      * @param watchCb Callback to invoke for each object that is retrieved.
      *                Takes as arguments the type and (ADDED/MODIFIED/DELETED)
      *                and the DomPtr for the obect.
      */
-    virtual void Watch(const std::string &kind,
-                       WatchCb watchCb);
+    virtual void StartWatch(const std::string &kind,
+                            WatchCb watchCb,
+                            size_t retryDelay = 60);
 
     /**
      * Watch for changes for all types since the last BulkGet (for that type).
      * @param watchCb Callback to invoke for each object that is retrieved.
      *                Takes as arguments the type and (ADDED/MODIFIED/DELETED)
      *                and the DomPtr for the obect.
+     * @param retryDelay Time to wait between reconnect attempts.
      */
-    virtual void WatchAll(WatchCb watchCb);
+    virtual void StartWatchAll(WatchCb watchCb, size_t retryDelay = 60);
 
     /**
-     * Stop the watch request if scheduled
+     * Stop a particular watch request.
      */
-    virtual void StopWatch();
+    virtual void StopWatch(const std::string &kind);
+
+    /**
+     * Stop all watch requests that are running.
+     */
+    virtual void StopWatchAll();
 
     /**
      * Getters
      */
-    web::http::uri uri() const { 
-        return uri_; 
+    const K8sUrl& k8sUrl() const { 
+        return k8sUrl_; 
     }
     std::vector<Endpoint> endpoints() { 
         return endpoints_; 
     }
-    web::http::client::http_client_config httpClientConfig() const { 
-        return httpClientConfig_; 
+    std::string caCertFile() const { 
+        return caCertFile_; 
     }
-    std::string apiGroup() const { 
-        return apiGroup_; 
-    }
-    std::string apiVersion() const { 
-        return apiVersion_; 
-    }
-    size_t fetchLimint() const { 
+    size_t fetchLimit() const { 
         return fetchLimit_; 
-    }
-
-    const KindInfoMap& kindInfoMap() const { 
-        return kindInfoMap_;
     }
 
     // Get UUID from DOM of an object.
     static std::string UidFromObject(const contrail_rapidjson::Document& dom);
 
+    /**
+     * Types
+     */
+    struct KindInfo {
+        std::string             name;
+        std::string             singularName;
+        bool                    namespaced;
+        std::string             kind;
+        std::string             resourceVersion;
+        WatcherPtr              watcher;
+    };
+    typedef std::map<const std::string, KindInfo> KindInfoMap;
+
+    const KindInfoMap& kindInfoMap() const { 
+        return kindInfoMap_;
+    }
+
 protected:
-    // Information needed to connect
-    web::http::uri uri_;
+    // Location of the K8s API server
+    K8sUrl k8sUrl_;
     std::vector<Endpoint> endpoints_;
-    web::http::client::http_client_config httpClientConfig_;
-    const std::string apiGroup_;
-    const std::string apiVersion_;
+
+    // Configuration options
+    const std::string caCertFile_;
     size_t fetchLimit_;
+    std::string fetchLimitString_;
+
+    // Connection
+    boost::scoped_ptr<RestClient::Connection> cx_;
 
     // Type information, indexed by kind
     KindInfoMap kindInfoMap_;
-
-    // Map kinds to asynchronous tasks 
-    std::map<const std::string, pplx::task<void> > watchTaskMap_;
 };
 
 } //namespace client

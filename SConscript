@@ -72,6 +72,12 @@ BuildEnv.Install(BuildEnv['TOP_INCLUDE'] + '/database',
     '#src/contrail-common/database/gendb_if.h')
 BuildEnv.Install(BuildEnv['TOP_INCLUDE'] + '/database/k8s',
     '#src/contrail-common/database/k8s/k8s_client.h')
+BuildEnv.Install(BuildEnv['TOP_INCLUDE'] + '/database/k8s',
+    '#src/contrail-common/database/k8s/k8s_watcher.h')
+BuildEnv.Install(BuildEnv['TOP_INCLUDE'] + '/database/k8s',
+    '#src/contrail-common/database/k8s/k8s_url.h')
+BuildEnv.Install(BuildEnv['TOP_INCLUDE'] + '/database/k8s',
+    '#src/contrail-common/database/k8s/k8s_client_types.h')
 BuildEnv.Install(BuildEnv['TOP_INCLUDE'] + '/database/cassandra/cql',
     '#src/contrail-common/database/cassandra/cql/cql_if.h')
 BuildEnv.Install(BuildEnv['TOP_INCLUDE'] + '/database/cassandra/cql',

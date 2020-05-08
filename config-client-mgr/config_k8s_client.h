@@ -28,6 +28,7 @@ using namespace std;
 using contrail_rapidjson::Document;
 using contrail_rapidjson::Value;
 using k8s::client::K8sClient;
+using k8s::client::DomPtr;
 
 class EventManager;
 class ConfigClientManager;
@@ -204,7 +205,7 @@ public:
                                       const string &lookup_key);
 
     bool IsTaskTriggered() const;
-    virtual void ProcessResponse(std::string type, K8sClient::DomPtr domPtr);
+    virtual void ProcessResponse(std::string type, DomPtr dom_ptr);
 
     // For testing
     static void set_watch_disable(bool disable)
@@ -219,35 +220,40 @@ public:
     // Convert a UUID into a pair of longs in big-endian format.
     // Sets longs[0] are the most-significant bytes, 
     // and longs[1] to the least-significant bytes.
-    static void UuidToLongLongs(
+    static void UUIDToLongLongs(
         const string& uuid, unsigned long long longs[]);
-
-    // Convert a TypeName or fieldName to type_name or field_name
-    static string K8sNameConvert(
-        const char* type_name, unsigned length);
 
     // Convert a Cassandra type name into a Kubernetes type name
     static string CassTypeToK8sKind(const std::string& cass_type);
 
+    // Convert a TypeName or fieldName to type_name or field_name
+    string K8sNameConvert(
+        const char* name, unsigned length);
+
     // Convert a K8s JSON into Cassandra JSON
-    static void K8sJsonConvert(
+    void K8sJsonConvert(
         const Document& k8s_dom, Document& cass_dom);
 
     // Adds a K8s ref(s) to a Cassandra dom
-    static void K8sJsonAddRefs(
+    void K8sJsonAddRefs(
         Value::ConstMemberIterator& refs, Document& cass_dom);
 
     // Adds a member (recursively) from K8s dom into a Cassandra dom.
-    static void K8sJsonMemberConvert(
+    void K8sJsonMemberConvert(
         Value::ConstMemberIterator& member, 
         Value& dom, Document::AllocatorType& alloc);
+
+    // Adds a member (recursively) from K8s dom into a Cassandra dom.
+    void K8sJsonValueConvert(
+        const Value& value, 
+        Value& converted, Document::AllocatorType& alloc);
 
     static const std::string api_group_;
     static const std::string api_version_;
 
 protected:
     virtual bool BulkDataSync();
-    void EnqueueDBSyncRequest(K8sClient::DomPtr domPtr);
+    void EnqueueDBSyncRequest(DomPtr dom_ptr);
 
     virtual int HashUUID(const std::string &uuid_str) const;
     int num_workers() const { return num_workers_; }
@@ -259,6 +265,8 @@ private:
 
     // A Job for watching changes to config stored in K8s
     class K8sWatcher;
+
+    bool InitRetry();
 
     // Base URL for K8s API
     static const std::string k8s_api_url_base_;
@@ -278,6 +286,9 @@ private:
     PartitionList partitions_;
     boost::scoped_ptr<TaskTrigger> uuid_reader_;
     tbb::atomic<long> bulk_sync_status_;
+
+    // "special case" K8s to cassandra JSON name mapping.
+    map<string, string> k8s_name_conversion_;
 };
 
 #endif // config_k8s_client_h

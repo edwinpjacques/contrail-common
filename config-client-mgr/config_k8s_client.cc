@@ -48,6 +48,7 @@ using contrail_rapidjson::StringBuffer;
 using contrail_rapidjson::Value;
 using contrail_rapidjson::Writer;
 using k8s::client::K8sClient;
+using k8s::client::K8sUrl;
 
 bool ConfigK8sClient::disable_watch_;
 
@@ -64,12 +65,15 @@ const std::string ConfigK8sClient::api_version_ = "v1alpha1";
 class ConfigK8sClient::K8sWatcher : public Task
 {
 public:
-    K8sWatcher(ConfigK8sClient *k8s_client) : Task(TaskScheduler::GetInstance()->GetTaskId("k8s::K8sWatcher")),
-                                                k8s_client_(k8s_client)
+    K8sWatcher(ConfigK8sClient *k8s_client) 
+        : Task(TaskScheduler::GetInstance()->GetTaskId("k8s::K8sWatcher")),
+          k8s_client_(k8s_client)
     {
     }
 
     virtual bool Run();
+
+    virtual void OnTaskCancel();
 
     ConfigK8sClient *client() const
     {
@@ -82,7 +86,6 @@ public:
 
 private:
     ConfigK8sClient *k8s_client_;
-    void ProcessResponse(std::string type, K8sClient::DomPtr domPtr);
 };
 
 ConfigK8sClient::ConfigK8sClient(ConfigClientManager *mgr,
@@ -92,20 +95,22 @@ ConfigK8sClient::ConfigK8sClient(ConfigClientManager *mgr,
     : ConfigDbClient(mgr, evm, options),
       num_workers_(num_workers)
 {
-    web::http::uri_builder uri_builder;
-    uri_builder.set_scheme("http");
-    uri_builder.set_host(config_db_ips().empty() ? "127.0.0.1" : config_db_ips()[0]);
-    uri_builder.set_port(GetFirstConfigDbPort());
+    // Initialize map of K8s property names to Cassandra JSON
+    k8s_name_conversion_["attributes"] = "attr";
+    k8s_name_conversion_["NetworkIPAM"] = "network_ipam";
+    k8s_name_conversion_["network"] = "instance_ip";
+    k8s_name_conversion_["InstanceIP"] = "instance_ip";
 
-    web::http::client::http_client_config config;
-    web::uri uri = uri_builder.to_uri();
+    std::string server = config_db_ips().empty() ? "127.0.0.1" : config_db_ips()[0];
+    size_t port = GetFirstConfigDbPort();
+    ostringstream service_url;
+    service_url << (options.config_db_use_ssl ? "https" : "http") << "://" << server << ':' << port << "/apis";
+    K8sUrl k8s_url(service_url.str(), api_group_, api_version_);
 
     k8s_client_.reset(ConfigFactory::Create<K8sClient>(
-        uri,
-        config,
-        api_group_,
-        api_version_,
-        this->GetNumReadRequestToBunch()));
+        k8s_url,
+        options.config_db_ca_certs,
+        GetNumReadRequestToBunch()));
     InitConnectionInfo();
     bulk_sync_status_ = 0;
 
@@ -152,13 +157,6 @@ void ConfigK8sClient::StartWatcher()
     scheduler->Enqueue(task);
 }
 
-void ConfigK8sClient::K8sWatcher::ProcessResponse(
-    std::string type,
-    K8sClient::DomPtr domPtr)
-{
-    client()->ProcessResponse(type, domPtr);
-}
-
 bool ConfigK8sClient::K8sWatcher::Run()
 {
     /**
@@ -177,14 +175,19 @@ bool ConfigK8sClient::K8sWatcher::Run()
     /**
       * Invoke k8s client library to watch for changes.
       */
-    client()->k8s_client_->Watch("/contrail/",
-                            boost::bind(&ConfigK8sClient::K8sWatcher::ProcessResponse,
-                                        this, _1, _2));
+    client()->k8s_client_->StartWatchAll(
+        boost::bind(&ConfigK8sClient::ProcessResponse, 
+                    k8s_client_, _1, _2));
 
     return true;
 }
 
-void ConfigK8sClient::ProcessResponse(std::string type, K8sClient::DomPtr domPtr)
+void ConfigK8sClient::K8sWatcher::OnTaskCancel()
+{
+    client()->k8s_client_->StopWatchAll();
+}
+
+void ConfigK8sClient::ProcessResponse(std::string type, DomPtr dom_ptr)
 {
     /**
       * If reinit is triggerred, don't consume the message.
@@ -196,12 +199,12 @@ void ConfigK8sClient::ProcessResponse(std::string type, K8sClient::DomPtr domPtr
             ConfigClientMgrDebug,
             "K8S Watcher SM: ProcessResponse: re init triggered,"
             " stop watching");
-        k8s_client_->StopWatch();
+        k8s_client_->StopWatchAll();
         return;
     }
 
     /**
-      * To stqrt consuming the message, we should have finished
+      * To start consuming the message, we should have finished
       * bulk sync in case we started it.
       */
     mgr()->WaitForEndOfConfig();
@@ -209,13 +212,13 @@ void ConfigK8sClient::ProcessResponse(std::string type, K8sClient::DomPtr domPtr
     /**
       * Update FQName cache.
       */
-    Value::ConstMemberIterator metadata = domPtr->FindMember("metadata");
+    Value::ConstMemberIterator metadata = dom_ptr->FindMember("metadata");
     if (metadata == metadata->value.MemberEnd())
     {
         CONFIG_CLIENT_DEBUG(
             ConfigClientMgrDebug,
             "K8S Watcher SM: ProcessResponse: metadata missing: " + 
-                JsonToString(*domPtr));
+                JsonToString(*dom_ptr));
         return;
     }
 
@@ -225,14 +228,14 @@ void ConfigK8sClient::ProcessResponse(std::string type, K8sClient::DomPtr domPtr
         CONFIG_CLIENT_DEBUG(
             ConfigClientMgrDebug,
             "K8S Watcher SM: ProcessResponse: uid missing: " + 
-                JsonToString(*domPtr));
+                JsonToString(*dom_ptr));
         return;
     }    
 
     this->EnqueueUUIDRequest(
         type, 
         uid->value.GetString(), 
-        ConfigK8sClient::JsonToString(*domPtr));
+        ConfigK8sClient::JsonToString(*dom_ptr));
 }
 
 void ConfigK8sClient::InitDatabase()
@@ -241,10 +244,12 @@ void ConfigK8sClient::InitDatabase()
     while (true)
     {
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug, "K8S SM: Db Init");
-        if (!k8s_client_->Init())
+        if (k8s_client_->Init() != 0)
         {
             CONFIG_CLIENT_DEBUG(ConfigK8sClientInitErrorMessage,
                                 "Database initialization failed");
+            if (!InitRetry()) return;
+            continue;
         }
         break;
     }
@@ -289,7 +294,7 @@ string ConfigK8sClient::JsonToString(const Value& jsonValue)
 // Convert a UUID into a pair of longs in big-endian format.
 // Sets longs[0] are the most-significant bytes, 
 // and longs[1] to the least-significant bytes.
-void ConfigK8sClient::UuidToLongLongs(
+void ConfigK8sClient::UUIDToLongLongs(
     const string& uuid, unsigned long long longs[])
 {
     // convert string UUID into binary UUID
@@ -348,14 +353,22 @@ string ConfigK8sClient::CassTypeToK8sKind(const std::string& cass_type)
     return ret; 
 }
 
-// Convert a TypeName or fieldName to type_name or field_name
+// Convert a TypeName or fieldName to name or field_name
 string ConfigK8sClient::K8sNameConvert(
-    const char* type_name, unsigned length)
+    const char* name, unsigned length)
 {
+    // First, look for hard-coded mapping
+    auto conversion = k8s_name_conversion_.find(name);
+    if (conversion != k8s_name_conversion_.end())
+    {
+        return conversion->second;
+    }
+
+    // Convert the name algorithmically
     string ret;
     for (size_t i = 0; i < length; ++i)
     {
-        char c = type_name[i];
+        char c = name[i];
         char lc = tolower(c);
         if (c != lc && i > 0) {
             ret +='_';
@@ -374,31 +387,60 @@ void ConfigK8sClient::K8sJsonMemberConvert(
     string member_name_string = 
         ConfigK8sClient::K8sNameConvert(
             member->name.GetString(), member->name.GetStringLength());
+    if (object.FindMember(member_name_string.c_str()) != object.MemberEnd())
+    {
+        // already set (from status, most likely) -- ignore member
+        return;
+    }
+
     Value new_member_name;
     new_member_name.SetString(
         member_name_string.c_str(), member_name_string.length(), alloc);
 
     // create the new value
-    Value new_member;
-    if(member->value.IsObject())
+    Value converted;
+    K8sJsonValueConvert(member->value, converted, alloc);
+    object.AddMember(new_member_name, converted, alloc);
+}
+
+void ConfigK8sClient::K8sJsonValueConvert(
+    const Value& value, 
+    Value& converted, 
+    Document::AllocatorType& alloc)
+{
+    if(value.IsObject())
     {
         // If this is an object, recurse
-        new_member.SetObject();
-        for (Value::ConstMemberIterator sub_object = 
-            member->value.MemberBegin();
-            sub_object != member->value.MemberEnd();
-            ++sub_object)
+        converted.SetObject();
+        for (auto obj_member = 
+            value.MemberBegin();
+            obj_member != value.MemberEnd();
+            ++obj_member)
         {
             // recurse to visit other objects
             ConfigK8sClient::K8sJsonMemberConvert(
-                sub_object, new_member, alloc);
+                obj_member, converted, alloc);
+        }
+    }
+    else if (value.IsArray())
+    {
+        // Create array and recurse.
+        converted.SetArray();
+        for (auto array_elem = value.Begin();
+            array_elem != value.End();
+            ++array_elem)
+        {
+            Value array_elem_value;
+            // recurse to visit other objects
+            ConfigK8sClient::K8sJsonValueConvert(
+                *array_elem, array_elem_value, alloc);
+            converted.PushBack(array_elem_value, alloc);
         }
     }
     else
     {
-        new_member.CopyFrom(member->value, alloc);
+        converted.CopyFrom(value, alloc);
     }
-    object.AddMember(new_member_name, new_member, alloc);
 }
 
 void ConfigK8sClient::K8sJsonAddRefs(
@@ -408,8 +450,15 @@ void ConfigK8sClient::K8sJsonAddRefs(
     // convert and set the name of the ref to add
     string ref_name_str = ConfigK8sClient::K8sNameConvert(
         ref->name.GetString(), ref->name.GetStringLength());
+    // If we find the string references at the end of the name, replace with refs
+    auto find_references = ref_name_str.rfind("_references");
+    if (find_references != string::npos)
+    {
+        ref_name_str.erase(find_references + 4);
+        ref_name_str += 's';
+    }
     if (ref->value.IsObject()) {
-        // If this is a parent reference, need to set the kind
+        // If this is a parent reference, need to set the parent_type
         if (ref_name_str == "parent")
         {
             Value::ConstMemberIterator ref_kind = ref->value.FindMember("kind");
@@ -435,8 +484,7 @@ void ConfigK8sClient::K8sJsonAddRefs(
         }
     }
     else if (ref->value.IsArray()) {
-        // If the value is an array, create an array and add each array element
-        // to the dom.
+        // Value is an array. Create an array and add each array element to the dom.
         Value ref_value;
         ref_value.SetArray();
 
@@ -459,7 +507,6 @@ void ConfigK8sClient::K8sJsonAddRefs(
                 refs->FindMember("attributes");
             if (ref_attributes != refs->MemberEnd())
             {
-                Value cass_attributes;
                 ConfigK8sClient::K8sJsonMemberConvert(
                     ref_attributes, ref_array_val, cass_dom.GetAllocator());
             }
@@ -562,7 +609,7 @@ void ConfigK8sClient::K8sJsonConvert(
     if (!uuid_string.empty()) {
         // convert string UUID into binary UUID
         unsigned long long longs[2] = {0};
-        UuidToLongLongs(uuid_string, longs);
+        UUIDToLongLongs(uuid_string, longs);
 
         // create uuid object (binary) and add most signifigant 8 bytes
         Value idperm_uuid;
@@ -585,21 +632,6 @@ void ConfigK8sClient::K8sJsonConvert(
     // add id_perms to the dom
     cass_dom.AddMember("id_perms", idperms_val, cass_dom.GetAllocator());
 
-    // Iterate through the spec.  Add all the values as members of the dom.
-    Value::ConstMemberIterator spec = dom.FindMember("spec");
-    if (spec != dom.MemberEnd() && !spec->value.IsNull()) {
-        for (Value::ConstMemberIterator spec_member = 
-                spec->value.MemberBegin();
-            spec_member != spec->value.MemberEnd();
-            ++spec_member)
-        {
-            // change all names to follow contrail legacy naming conventions
-            // and add them to the dom (recursively).
-            ConfigK8sClient::K8sJsonMemberConvert(
-                spec_member, cass_dom, cass_dom.GetAllocator());
-        }
-    }
-
     // Iterate through the status.  Add all refs to the dom.
 
     // First look for parent ref.
@@ -608,16 +640,52 @@ void ConfigK8sClient::K8sJsonConvert(
         ConfigK8sClient::K8sJsonAddRefs(parent, cass_dom);
     }
 
-    // Then look for all other refs.
+    // Then look for all other stuff.
     for(Value::ConstMemberIterator status_member = status->value.MemberBegin(); 
         status_member != status->value.MemberEnd(); 
         ++status_member)
     {
         string member_name = status_member->name.GetString();
-        if (member_name.rfind("Refs") != string::npos) {
+        if (member_name == "state")
+        {
+            // ignore this field
+            continue;
+        }
+        if (member_name.rfind("References") != string::npos) {
+            // Add refs specially
             ConfigK8sClient::K8sJsonAddRefs(status_member, cass_dom);
         }
+        else
+        {
+            // Add non-ref properties
+            ConfigK8sClient::K8sJsonMemberConvert(
+                status_member, cass_dom, cass_dom.GetAllocator());
+        }
+        
     }
+
+    // Iterate through the spec.  
+    // Add all the values not duplicated from the status.
+    Value::ConstMemberIterator spec = dom.FindMember("spec");
+    if (spec != dom.MemberEnd() && !spec->value.IsNull()) {
+        for (Value::ConstMemberIterator spec_member = 
+                spec->value.MemberBegin();
+            spec_member != spec->value.MemberEnd();
+            ++spec_member)
+        {
+            // Add non-ref properties (not overriding anything set by status).
+            ConfigK8sClient::K8sJsonMemberConvert(
+                spec_member, cass_dom, cass_dom.GetAllocator());
+        }
+    }
+}
+
+bool ConfigK8sClient::InitRetry() {
+    CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug, "K8S SM: DB Init Retry");
+    // If reinit is triggered, return false to abort connection attempt
+    if (mgr()->is_reinit_triggered()) return false;
+    usleep(GetInitRetryTimeUSec());
+    return true;
 }
 
 bool ConfigK8sClient::BulkDataSync()
@@ -783,12 +851,12 @@ void ConfigK8sClient::EnqueueUUIDRequest(string oper,
 }
 
 void ConfigK8sClient::EnqueueDBSyncRequest(
-    K8sClient::DomPtr domPtr)
+    DomPtr dom_ptr)
 {
     this->EnqueueUUIDRequest(
         "ADDED", 
-        K8sClient::UidFromObject(*domPtr), 
-        ConfigK8sClient::JsonToString(*domPtr));
+        K8sClient::UidFromObject(*dom_ptr), 
+        ConfigK8sClient::JsonToString(*dom_ptr));
 }
 
 bool ConfigK8sClient::UUIDReader()
@@ -821,16 +889,15 @@ bool ConfigK8sClient::UUIDReader()
         }
 
         // Perform the bulk get for this type.
-        web::http::http_response resp;
-    
-        resp = k8s_client_->BulkGet(
-            *it, boost::bind(&ConfigK8sClient::EnqueueDBSyncRequest, this, _1));
-        if (resp.status_code() >= 300)
+        int resp = k8s_client_->BulkGet(
+            kind, boost::bind(&ConfigK8sClient::EnqueueDBSyncRequest, this, _1));
+        if (resp >= 300 || resp < 200)
         {
             /**
-                 * RPC failure. Connection down.
-                 */
+             * RPC failure. Connection down.
+             */
             HandleK8sConnectionStatus(false);
+            usleep(GetInitRetryTimeUSec());
         }
     } //for
 
