@@ -98,8 +98,8 @@ ConfigK8sClient::ConfigK8sClient(ConfigClientManager *mgr,
     // Initialize map of K8s property names to Cassandra JSON
     k8s_name_conversion_["attributes"] = "attr";
     k8s_name_conversion_["NetworkIPAM"] = "network_ipam";
-    k8s_name_conversion_["network"] = "instance_ip";
     k8s_name_conversion_["InstanceIP"] = "instance_ip";
+    k8s_name_conversion_["BGPRouter"] = "bgp_router";
 
     std::string server = config_db_ips().empty() ? "127.0.0.1" : config_db_ips()[0];
     size_t port = GetFirstConfigDbPort();
@@ -632,15 +632,7 @@ void ConfigK8sClient::K8sJsonConvert(
     // add id_perms to the dom
     cass_dom.AddMember("id_perms", idperms_val, cass_dom.GetAllocator());
 
-    // Iterate through the status.  Add all refs to the dom.
-
-    // First look for parent ref.
-    Value::ConstMemberIterator parent = status->value.FindMember("parent");
-    if (parent != status->value.MemberEnd()) {
-        ConfigK8sClient::K8sJsonAddRefs(parent, cass_dom);
-    }
-
-    // Then look for all other stuff.
+    // Look for properties in the status.
     for(Value::ConstMemberIterator status_member = status->value.MemberBegin(); 
         status_member != status->value.MemberEnd(); 
         ++status_member)
@@ -666,16 +658,23 @@ void ConfigK8sClient::K8sJsonConvert(
 
     // Iterate through the spec.  
     // Add all the values not duplicated from the status.
-    Value::ConstMemberIterator spec = dom.FindMember("spec");
+    auto spec = dom.FindMember("spec");
     if (spec != dom.MemberEnd() && !spec->value.IsNull()) {
-        for (Value::ConstMemberIterator spec_member = 
-                spec->value.MemberBegin();
+        for (auto spec_member = spec->value.MemberBegin();
             spec_member != spec->value.MemberEnd();
             ++spec_member)
         {
-            // Add non-ref properties (not overriding anything set by status).
-            ConfigK8sClient::K8sJsonMemberConvert(
-                spec_member, cass_dom, cass_dom.GetAllocator());
+            // Look for parent ref in the spec.
+            if (strncmp(spec_member->name.GetString(), "parent", 
+                        spec_member->name.GetStringLength()) == 0) {
+                ConfigK8sClient::K8sJsonAddRefs(spec_member, cass_dom);
+            }
+            else
+            {
+                // Add non-ref properties (not overriding anything set by status).
+                ConfigK8sClient::K8sJsonMemberConvert(
+                    spec_member, cass_dom, cass_dom.GetAllocator());
+            }
         }
     }
 }
