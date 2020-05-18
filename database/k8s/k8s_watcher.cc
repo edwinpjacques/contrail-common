@@ -34,8 +34,14 @@ size_t k8s::client::K8sWatcherWriteCallback(
         {
             Document eventDom;
             eventDom.Parse<0>(eventString.c_str());
+            if (!eventDom.IsObject())
+            {
+                K8S_CLIENT_WARN(K8sDebug, 
+                    std::string("K8S CLIENT: Invalid JSON: ") + 
+                    eventString.c_str());
+                continue;
+            }
             std::string type = eventDom.FindMember("type")->value.GetString();
-
             DomPtr objectDomPtr(new Document);
             objectDomPtr->CopyFrom(eventDom.FindMember("object")->value, objectDomPtr->GetAllocator());
 
