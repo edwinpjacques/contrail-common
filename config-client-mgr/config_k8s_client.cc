@@ -1300,7 +1300,7 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
                         "K8S SM: JSON Doc fed to CJP: " + refString);
 
     ConfigCass2JsonAdapter ccja(uuid, type_str, doc);
-    client()->mgr()->config_json_parser()->Receive(ccja, add_change);
+    client()->mgr()->config_json_parser()->Receive(ccja, add_change, IFMapOrigin::K8S);
 
     return true;
 }

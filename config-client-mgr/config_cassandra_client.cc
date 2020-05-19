@@ -369,7 +369,7 @@ void ConfigCassandraPartition::GenerateAndPushJson(
 
     ConfigCass2JsonAdapter ccja(uuid_key, client(), obj_type,
                                 cass_data_vec);
-    client()->mgr()->config_json_parser()->Receive(ccja, add_change);
+    client()->mgr()->config_json_parser()->Receive(ccja, add_change, IFMapOrigin::CASSANDRA);
 }
 
 // Post shutdown during reinit, cleanup all previous states and connections
