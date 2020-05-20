@@ -283,12 +283,12 @@ void ConfigK8sClient::HandleK8sConnectionStatus(bool success,
     }
 }
 
-string ConfigK8sClient::JsonToString(const Value& jsonValue)
+string ConfigK8sClient::JsonToString(const Value& json_value)
 {
-    StringBuffer stringBuffer;
-    Writer<StringBuffer> writer(stringBuffer);
-    jsonValue.Accept(writer);
-    return stringBuffer.GetString();        
+    StringBuffer string_buffer;
+    Writer<StringBuffer> writer(string_buffer);
+    json_value.Accept(writer);
+    return string_buffer.GetString();
 }
 
 // Convert a UUID into a pair of longs in big-endian format.
@@ -350,7 +350,37 @@ string ConfigK8sClient::CassTypeToK8sKind(const std::string& cass_type)
             last_char_underscore = false;
         }
     }
-    return ret; 
+    return ret;
+}
+
+string ConfigK8sClient::FqNameToString(const Value& fq_name_array)
+{
+    string fq_name_str;
+    for (auto name_itr = fq_name_array.Begin();
+        name_itr != fq_name_array.End(); 
+        ++name_itr)
+    {
+        fq_name_str += name_itr->GetString();
+        fq_name_str += ":";
+    }
+    fq_name_str.erase(fq_name_str.end() - 1);
+
+    return fq_name_str;
+}
+
+string ConfigK8sClient::ParentRefNameAndFqNameToString(const std::string& parent_name, const Value& fq_name_array)
+{
+    string fq_name_str;
+    for (auto name_itr = fq_name_array.Begin();
+        name_itr != (fq_name_array.End() - 1);
+        ++name_itr)
+    {
+        fq_name_str += name_itr->GetString();
+        fq_name_str += ":";
+    }
+    fq_name_str += parent_name;
+
+    return fq_name_str;
 }
 
 // Convert a TypeName or fieldName to name or field_name
@@ -445,6 +475,7 @@ void ConfigK8sClient::K8sJsonValueConvert(
 
 void ConfigK8sClient::K8sJsonAddRefs(
     Value::ConstMemberIterator& ref, 
+    Value::ConstMemberIterator& fq_name,
     Document& cass_dom)
 {
     // convert and set the name of the ref to add
@@ -461,7 +492,7 @@ void ConfigK8sClient::K8sJsonAddRefs(
         // If this is a parent reference, need to set the parent_type
         if (ref_name_str == "parent")
         {
-            Value::ConstMemberIterator ref_kind = ref->value.FindMember("kind");
+            auto ref_kind = ref->value.FindMember("kind");
             if (ref_kind != ref->value.MemberEnd())
             {
                 string parent_type_str = ConfigK8sClient::K8sNameConvert(
@@ -474,12 +505,22 @@ void ConfigK8sClient::K8sJsonAddRefs(
                 cass_dom.AddMember("parent_type", parent_type, cass_dom.GetAllocator());
             }
 
-            Value::ConstMemberIterator ref_uid = ref->value.FindMember("uid");
+            auto ref_uid = ref->value.FindMember("uid");
             if (ref_uid != ref->value.MemberEnd())
             {
                 Value parent_uuid;
                 parent_uuid.CopyFrom(ref_uid->value, cass_dom.GetAllocator());
                 cass_dom.AddMember("parent_uuid", parent_uuid, cass_dom.GetAllocator());
+            }
+
+            auto ref_name = ref->value.FindMember("name");
+            if (ref_name != ref->value.MemberEnd())
+            {
+                string parent_ref_to = ParentRefNameAndFqNameToString(
+                    ref_name->value.GetString(), fq_name->value);
+                Value parent_name;
+                parent_name.SetString(parent_ref_to.c_str(), cass_dom.GetAllocator());
+                cass_dom.AddMember("parent_name", parent_name, cass_dom.GetAllocator());
             }
         }
     }
@@ -488,14 +529,14 @@ void ConfigK8sClient::K8sJsonAddRefs(
         Value ref_value;
         ref_value.SetArray();
 
-        for (Value::ConstValueIterator refs = ref->value.GetArray().Begin(); 
+        for (auto refs = ref->value.GetArray().Begin(); 
              refs != ref->value.GetArray().End(); 
              ++refs)
         {
             Value ref_array_val;
             ref_array_val.SetObject();
             
-            Value::ConstMemberIterator ref_uid = refs->FindMember("uid");
+            auto ref_uid = refs->FindMember("uid");
             if (ref_uid != refs->MemberEnd())
             {
                 Value uuid;
@@ -503,12 +544,21 @@ void ConfigK8sClient::K8sJsonAddRefs(
                 ref_array_val.AddMember("uuid", uuid, cass_dom.GetAllocator());
             }
 
-            Value::ConstMemberIterator ref_attributes = 
+            auto ref_attributes =
                 refs->FindMember("attributes");
             if (ref_attributes != refs->MemberEnd())
             {
                 ConfigK8sClient::K8sJsonMemberConvert(
                     ref_attributes, ref_array_val, cass_dom.GetAllocator());
+            }
+
+            auto fq_name = refs->FindMember("fqName");
+            if (fq_name != refs->MemberEnd())
+            {
+                string fq_name_str = FqNameToString(fq_name->value);
+                Value to;
+                to.SetString(fq_name_str.c_str(), cass_dom.GetAllocator());
+                ref_array_val.AddMember("to", to, cass_dom.GetAllocator());
             }
 
             // add the new array element to the array
@@ -520,7 +570,10 @@ void ConfigK8sClient::K8sJsonAddRefs(
         ref_name.SetString(ref_name_str.c_str(), ref_name_str.length(), cass_dom.GetAllocator());
         cass_dom.AddMember(ref_name, ref_value, cass_dom.GetAllocator());
     }
-    // TODO: error in other cases?
+    else
+    {
+        CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug, "K8S SM: Ref syntax error for ref " + ref_name_str);
+    }
 }
 
 void ConfigK8sClient::K8sJsonConvert(
@@ -559,9 +612,9 @@ void ConfigK8sClient::K8sJsonConvert(
 
     // Add and rename fqName
     Value::ConstMemberIterator status = dom.FindMember("status");
-    Value::ConstMemberIterator fqName = status->value.FindMember("fqName");
-    if (fqName != status->value.MemberEnd()) {
-        Value fq_name_val(fqName->value, cass_dom.GetAllocator());
+    Value::ConstMemberIterator fq_name = status->value.FindMember("fqName");
+    if (fq_name != status->value.MemberEnd()) {
+        Value fq_name_val(fq_name->value, cass_dom.GetAllocator());
         cass_dom.AddMember("fq_name", fq_name_val, cass_dom.GetAllocator());
     }
 
@@ -645,7 +698,7 @@ void ConfigK8sClient::K8sJsonConvert(
         }
         if (member_name.rfind("References") != string::npos) {
             // Add refs specially
-            ConfigK8sClient::K8sJsonAddRefs(status_member, cass_dom);
+            ConfigK8sClient::K8sJsonAddRefs(status_member, fq_name, cass_dom);
         }
         else
         {
@@ -664,10 +717,14 @@ void ConfigK8sClient::K8sJsonConvert(
             spec_member != spec->value.MemberEnd();
             ++spec_member)
         {
-            // Look for parent ref in the spec.
-            if (strncmp(spec_member->name.GetString(), "parent", 
-                        spec_member->name.GetStringLength()) == 0) {
-                ConfigK8sClient::K8sJsonAddRefs(spec_member, cass_dom);
+            std::string spec_member_name = spec_member->name.GetString();
+
+            // Look for parent ref in the spec, but ignore other references.
+            if (spec_member_name == "parent") {
+                ConfigK8sClient::K8sJsonAddRefs(spec_member, fq_name, cass_dom);
+            }
+            else if (spec_member_name.rfind("References") != string::npos) {
+                continue;
             }
             else
             {
@@ -820,18 +877,13 @@ void ConfigK8sClient::EnqueueUUIDRequest(string oper,
                                                         uuid + " object: " + JsonToString(cass_json) + ". Skipping");
             return;
         }
-        string fq_name_str;
-        for (Value::ConstValueIterator name_itr = fq_name->value.Begin();
-             name_itr != fq_name->value.End(); 
-             ++name_itr)
-        {
-            fq_name_str += name_itr->GetString();
-            fq_name_str += ":";
-        }
-        fq_name_str.erase(fq_name_str.end() - 1);
+        string fq_name_str = FqNameToString(fq_name->value);
         if (FindFQName(uuid) == "ERROR")
         {
             AddFQNameCache(uuid, type_str, fq_name_str);
+            CONFIG_CLIENT_DEBUG(
+                ConfigClientMgrDebug, 
+                "AddFQNameCache(" + uuid + ',' + type_str + ',' + fq_name_str + ')');
         }
     }
     else if (oper == "DELETED")
@@ -1246,23 +1298,21 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
                     }
                 }
 
-                /**
-                  * Add ref_fq_name to the _ref
-                  * K8S gives ref_fq_name as well but needs to be
-                  * formatted as a string.
-                  * Get ref_fq_name from FQNameCache if present.
-                  * If not re-format the ref_fq_name present in the
-                  * document as a string and insert it back.
-                  */
-                Value &uuidVal = va["uuid"];
-                const string ref_uuid = uuidVal.GetString();
-                string ref_fq_name = client()->FindFQName(ref_uuid);
-
-                // Remove ref_fq_name from doc and re-add the
+                // If ref_fq_name is missing from doc, add the
                 // string formatted fq_name.
-                (*v)[i].RemoveMember("to");
-                Value vs1(ref_fq_name.c_str(), a);
-                (*v)[i].AddMember("to", vs1, a);
+                if ((*v)[i].FindMember("to") == (*v)[i].MemberEnd())
+                {
+                    Value &uuidVal = va["uuid"];
+                    const string ref_uuid = uuidVal.GetString();
+                    string ref_fq_name = client()->FindFQName(ref_uuid);
+
+                    CONFIG_CLIENT_DEBUG(
+                        ConfigClientMgrDebug, 
+                        "FindFQName(" + uuid + ") == " + ref_fq_name);
+
+                    Value vs1(ref_fq_name.c_str(), a);
+                    (*v)[i].AddMember("to", vs1, a);
+                }
             }
 
             // For creates/updates, need to update cache json_str

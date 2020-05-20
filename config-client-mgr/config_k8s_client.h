@@ -215,7 +215,7 @@ public:
 
     // Persist a value to a string.
     // This is not terribly efficient since it constructs the return value.
-    static string JsonToString(const Value& jsonValue);
+    static string JsonToString(const Value& json_value);
 
     // Convert a UUID into a pair of longs in big-endian format.
     // Sets longs[0] are the most-significant bytes, 
@@ -225,6 +225,12 @@ public:
 
     // Convert a Cassandra type name into a Kubernetes type name
     static string CassTypeToK8sKind(const std::string& cass_type);
+
+    // Convert an fq_name value to a string
+    static string FqNameToString(const Value& fq_name_array);
+
+    // Convert a reference name and fq_name to a string
+    static string ParentRefNameAndFqNameToString(const std::string& parent_name, const Value& fq_name_array);
 
     // Convert a TypeName or fieldName to type_name or field_name
     string K8sNameConvert(
@@ -236,7 +242,7 @@ public:
 
     // Adds a K8s ref(s) to a Cassandra dom
     void K8sJsonAddRefs(
-        Value::ConstMemberIterator& refs, Document& cass_dom);
+        Value::ConstMemberIterator& refs, Value::ConstMemberIterator& fq_name, Document& cass_dom);
 
     // Adds a member (recursively) from K8s dom into a Cassandra dom.
     void K8sJsonMemberConvert(
