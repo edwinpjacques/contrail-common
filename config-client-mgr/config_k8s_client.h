@@ -226,11 +226,14 @@ public:
     // Convert a Cassandra type name into a Kubernetes type name
     static string CassTypeToK8sKind(const std::string& cass_type);
 
-    // Convert an fq_name value to a string
-    static string FqNameToString(const Value& fq_name_array);
+    // Convert an fq_name value to a string.
+    // Optionally truncate values from the end.
+    static string FqNameToString(const Value& fq_name_array, size_t truncate);
 
     // Convert a reference name and fq_name to a string
-    static string ParentRefNameAndFqNameToString(const std::string& parent_name, const Value& fq_name_array);
+    static string FqNameToParentRefString(const Value& fq_name_array) {
+        return FqNameToString(fq_name_array, 1);
+    }
 
     // Convert a TypeName or fieldName to type_name or field_name
     string K8sNameConvert(

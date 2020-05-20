@@ -353,32 +353,17 @@ string ConfigK8sClient::CassTypeToK8sKind(const std::string& cass_type)
     return ret;
 }
 
-string ConfigK8sClient::FqNameToString(const Value& fq_name_array)
+string ConfigK8sClient::FqNameToString(const Value& fq_name_array, size_t truncate = 0)
 {
     string fq_name_str;
     for (auto name_itr = fq_name_array.Begin();
-        name_itr != fq_name_array.End(); 
+        (name_itr + truncate) != fq_name_array.End(); 
         ++name_itr)
     {
         fq_name_str += name_itr->GetString();
         fq_name_str += ":";
     }
     fq_name_str.erase(fq_name_str.end() - 1);
-
-    return fq_name_str;
-}
-
-string ConfigK8sClient::ParentRefNameAndFqNameToString(const std::string& parent_name, const Value& fq_name_array)
-{
-    string fq_name_str;
-    for (auto name_itr = fq_name_array.Begin();
-        name_itr != (fq_name_array.End() - 1);
-        ++name_itr)
-    {
-        fq_name_str += name_itr->GetString();
-        fq_name_str += ":";
-    }
-    fq_name_str += parent_name;
 
     return fq_name_str;
 }
@@ -516,8 +501,7 @@ void ConfigK8sClient::K8sJsonAddRefs(
             auto ref_name = ref->value.FindMember("name");
             if (ref_name != ref->value.MemberEnd())
             {
-                string parent_ref_to = ParentRefNameAndFqNameToString(
-                    ref_name->value.GetString(), fq_name->value);
+                string parent_ref_to = FqNameToParentRefString(fq_name->value);
                 Value parent_name;
                 parent_name.SetString(parent_ref_to.c_str(), cass_dom.GetAllocator());
                 cass_dom.AddMember("parent_name", parent_name, cass_dom.GetAllocator());
