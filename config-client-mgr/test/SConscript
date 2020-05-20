@@ -21,17 +21,13 @@ env.Append(LIBPATH = env['TOP'] + '/xml')
 env.Append(LIBPATH = env['TOP'] + '/xmpp')
 env.Append(LIBPATH = env['TOP'] + '/schema')
 
-k8s_incl = os.environ.get('CONTRAIL_K8S_CONFIG');
-
-if k8s_incl:
-    env.Prepend(LIBS = [ 'k8s_client', 'restclient-cpp' ])
-
 env.Prepend(LIBS = [ 'config_client_mgr', 'peer_sandesh', 'sandesh', 'http', 'http_parser', 'httpc',
                         'curl', 'sandeshvns', 'process_info', 'io',
                         'bgp_schema', 'pugixml', 'xml', 'task_test', 'db', 'curl',
                         'base', 'gunit', 'crypto', 'ssl', 'boost_regex',
                         'libbgp_schema', 'cassandra_cql', 'cassandra', 'gendb', 'httpc',
-                        'SimpleAmqpClient', 'rabbitmq'
+                        'SimpleAmqpClient', 'rabbitmq',
+                        'k8s_client', 'restclient-cpp'
                        ])
 
 if sys.platform != 'darwin':

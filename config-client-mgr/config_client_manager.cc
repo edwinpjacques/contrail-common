@@ -14,9 +14,7 @@
 #include "config_amqp_client.h"
 #include "config_db_client.h"
 #include "config_cassandra_client.h"
-#ifdef CONTRAIL_K8S_CONFIG
 #include "config_k8s_client.h"
-#endif
 #include "config_client_log.h"
 #include "config_client_log_types.h"
 #include "config_client_show_types.h"
@@ -112,11 +110,9 @@ void ConfigClientManager::SetUp() {
     thread_count_ = GetNumConfigReader();
     end_of_rib_computed_at_ = UTCTimestampUsec();
     if (config_options_.config_db_use_k8s) {
-#ifdef CONTRAIL_K8S_CONFIG
         config_db_client_.reset(ConfigFactory::Create<ConfigK8sClient>
                                 (this, evm_, config_options_,
                                  thread_count_));
-#endif
     } else {
         config_db_client_.reset(
                 ConfigFactory::Create<ConfigCassandraClient>(this, evm_,
@@ -240,11 +236,9 @@ void ConfigClientManager::PostShutdown() {
     // Delete of config db client object guarantees the flusing of
     // object uuid cache and uuid read request list.
     if (config_options_.config_db_use_k8s) {
-#ifdef CONTRAIL_K8S_CONFIG
         config_db_client_.reset(ConfigFactory::Create<ConfigK8sClient>
                                 (this, evm_, config_options_,
                                  thread_count_));
-#endif
     } else {
         config_db_client_.reset(ConfigFactory::Create<ConfigCassandraClient>
                                 (this, evm_, config_options_,
@@ -284,11 +278,9 @@ bool ConfigClientManager::InitConfigClient() {
 
     // Common code path for both init/reinit
     if (config_options_.config_db_use_k8s) {
-#ifdef CONTRAIL_K8S_CONFIG
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
             "Config Client Mgr SM: Start K8S Watcher");
         config_db_client_->StartWatcher();
-#endif
     } else {
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
             "Config Client Mgr SM: Start RabbitMqReader and init Database");
