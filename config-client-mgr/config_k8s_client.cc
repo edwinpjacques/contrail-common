@@ -297,16 +297,20 @@ string ConfigK8sClient::JsonToString(const Value& json_value)
 void ConfigK8sClient::UUIDToLongLongs(
     const string& uuid, unsigned long long longs[])
 {
+    // Use a union to convert byte array to words
+    union {
+        boost::uuids::uuid uuid;
+        __uint128_t data;
+    } uuid_union;
+
     // convert string UUID into binary UUID
     boost::uuids::string_generator string_gen;
-    boost::uuids::uuid boost_uuid = string_gen(uuid);
-    __uint128_t uuid_data = 
-        *reinterpret_cast<__uint128_t*>(boost_uuid.data);
+    uuid_union.uuid = string_gen(uuid);
 
     // get the least and most significant bytes
-    unsigned long long uuid_first_longlong = uuid_data >> 64;
+    unsigned long long uuid_first_longlong = uuid_union.data >> 64;
     unsigned long long uuid_second_longlong = 
-        uuid_data & (((__uint128_t)1 << 64) - (__uint128_t)1);
+        uuid_union.data & (((__uint128_t)1 << 64) - (__uint128_t)1);
 
     // convert from big-endian to hardware byte order (usually little-endian)
     unsigned long long uuid_first_longlong_h = be64toh(uuid_first_longlong);
