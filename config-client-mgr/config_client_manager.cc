@@ -113,6 +113,7 @@ void ConfigClientManager::SetUp() {
         config_db_client_.reset(ConfigFactory::Create<ConfigK8sClient>
                                 (this, evm_, config_options_,
                                  thread_count_));
+        config_json_parser_->SetDbOrigin(IFMapOrigin::K8S);
     } else {
         config_db_client_.reset(
                 ConfigFactory::Create<ConfigCassandraClient>(this, evm_,

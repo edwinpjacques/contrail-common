@@ -42,8 +42,7 @@ public:
     // please see ifmap/client/config_json_parser.cc as example.
     virtual void SetupGraphFilter() = 0;
     virtual bool Receive(const ConfigCass2JsonAdapter &adapter, 
-                         bool add_change,
-                         IFMapOrigin::Origin db_origin) = 0;
+                         bool add_change) = 0;
     virtual void EndOfConfig();
     const ObjectTypeList &ObjectTypeListToRead() const {
         return obj_type_to_read_;
@@ -95,6 +94,7 @@ public:
                            const std::string &lookup_key) const;
 
     IFMapOrigin::Origin GetDbOrigin() const { return db_origin_; }
+    void SetDbOrigin(IFMapOrigin::Origin db_origin) { db_origin_ = db_origin; }
 
 private:
     ConfigClientManager *mgr_;
