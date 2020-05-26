@@ -39,14 +39,22 @@ size_t k8s::client::K8sWatcherWriteCallback(
                 K8S_CLIENT_WARN(K8sDebug, 
                     std::string("K8S CLIENT: Invalid JSON: ") + 
                     eventString.c_str());
-                continue;
+                return CURLE_WRITE_ERROR;
             }
-            std::string type = eventDom.FindMember("type")->value.GetString();
+            auto type = eventDom.FindMember("type");
+            if (type == eventDom.MemberEnd())
+            {
+                K8S_CLIENT_WARN(K8sDebug, 
+                    std::string("K8S CLIENT: Error Watch Response: ") + 
+                    eventString.c_str());
+                return CURLE_WRITE_ERROR;
+            }
+            std::string typeStr = eventDom.FindMember("type")->value.GetString();
             DomPtr objectDomPtr(new Document);
             objectDomPtr->CopyFrom(eventDom.FindMember("object")->value, objectDomPtr->GetAllocator());
 
             // Pass type and object payload to callback
-            userdata->watcher->watchCb()(type, objectDomPtr);
+            userdata->watcher->watchCb()(typeStr, objectDomPtr);
         }
         // Done with the string
         userdata->body.clear();
@@ -54,8 +62,9 @@ size_t k8s::client::K8sWatcherWriteCallback(
     catch(std::exception e)
     {
         K8S_CLIENT_WARN(K8sDebug, std::string("K8S CLIENT: Unhandled exception: ") + e.what());
+        return CURLE_WRITE_ERROR;
     }
-    return bytes;
+    return CURLE_OK;
 }
 
 K8sWatcher::K8sWatcher(
@@ -71,22 +80,14 @@ void K8sWatcher::Watch(const std::string& version, size_t retryDelay)
     version_ = version;
 
     // Create connection context
-    cx_.reset(new RestClient::Connection(k8sUrl_.serverUrl()));
+    k8s::client::InitConnection(cx_, k8sUrl_, caCertFile_);
+
     // Set the callback used to process response
     cx_->SetWriteFunction(
         reinterpret_cast<RestClient::WriteCallback>(K8sWatcherWriteCallback));
     // Create the response context to handle receiving streamed data.
     // Provide it with a back-pointer to this watch object.
     response_.reset(new K8sWatcherResponse(this));
-
-    // Set SSL options if enabled
-    if (k8sUrl_.encrypted())
-    {
-        cx_->SetCertPath(caCertFile_);
-        // Convert file extension to cert type.
-        // e.g. -- cert.pem => "PEM", cert.p12 => "P12"
-        cx_->SetCertType(k8s::client::CertType(caCertFile_));
-    }
 
     while(true)
     {

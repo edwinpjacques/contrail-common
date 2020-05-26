@@ -11,45 +11,40 @@
 #include <boost/bind.hpp>
 #include <iostream>
 #include <database/k8s/k8s_client.h>
+#include <restclient-cpp/restclient.h>
+#include <restclient-cpp/connection.h>
 
 using namespace std;
 using k8s::client::K8sClient;
 
 class K8sClientTest : public ::testing::Test {
     protected:
-        K8sClientTest() {
+        k8s::client::K8sUrl url_;
+        RestClient::Connection cx_;
+        // k8s::client::K8sUrl k8sUrl_;
+        // k8s::client::WatcherPtr watcherPtr_;
+
+        K8sClientTest() : url_("https://127.0.0.1:32770/apis", "core.contrail.juniper.net", "v1alpha1"), cx_(url_.serverUrl()) {
+            // k8sUrl_ = k8s::client::K8sUrl("http://127.0.0.1:8001", "core.contrail.juniper.net", "v1alpha1");
         }
         virtual ~K8sClientTest(){
         }
         virtual void SetUp() {
+            // watcherPtr_.reset(new k8s::client::K8sWatcher(k8sUrl_, "globalsystemconfig", ));
         }
         virtual void TearDown() {
+            // watcherPtr_.reset();
         }
 };
 
 
-// TEST_F(K8sClientTest, CreateKeys) {
-//     vector<string> hosts = {"127.0.0.1"};
-//     K8sClient etcd(hosts, 2379, false);
-//     (void)etcd.Connect();
-//     etcd.Delete("/", "\\0");
-//     etcd.Set("/contrail/vn1", "vn1");
-//     etcd.Set("/contrail/vn2", "vn2");
-//     etcd.Set("/contrail/vn3", "vn3");
-//     etcd.Set("/contrail/vn4", "vn4");
-//     etcd.Set("/contrail/vn5", "vn5");
-//     etcd.Set("/contrail/vn6", "vn6");
-//     etcd.Set("/contrail/vn7", "vn7");
-
-//     EtcdResponse resp;
-//     EtcdResponse::kv_map kvs;
-
-//     resp = etcd.Get("/", "\\0", 7);
-//     kvs = resp.kvmap();
-
-//     EXPECT_EQ(kvs.size(), 7);
-//     EXPECT_EQ(resp.err_code(), 0);
-// }
+TEST_F(K8sClientTest, TestGet) {
+    cx_.SetCertPath("/root/projects/contrail-config-ng/contrail/hack/kind-kind.pem");
+    cx_.SetCertType("PEM");
+    string namePath = url_.namePath("globalsystemconfigs?watch=1&resourceVersion=");
+    // RestClient::Response r = cx_.get(namePath);
+    // EXPECT_EQ(200, r.code);
+}
 
 // TEST_F(K8sClientTest, UpdateKey)
 // {

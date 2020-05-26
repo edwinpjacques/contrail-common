@@ -9,6 +9,8 @@ env = K8sClientEnv.Clone()
 env.Append(CPPPATH = env['TOP'])
 env.Append(CPPPATH = [env['TOP'] + '/database'])
 
+env.Append(CXXFLAGS = '-Wno-deprecated-declarations -DGTEST_USE_OWN_TR1_TUPLE=1 -std=c++11')
+
 def MapBuildDir(list):
     return map(lambda x: env['TOP'] + '/' + x, list)
 
@@ -26,7 +28,10 @@ env.Prepend(LIBS=[  'io',
                     'ssl',
                     'crypto',
                     'gunit',
-                    'k8s_client' ])
+                    'boost_regex',
+                    'k8s_client',
+                    'restclient-cpp'
+                    ])
 
 libs = MapBuildDir([
         'xml',

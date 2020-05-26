@@ -71,16 +71,7 @@ int K8sClient::Init()
     endpoints_.push_back(*endpointIterator);
 
     // Create connection context
-    cx_.reset(new RestClient::Connection(k8sUrl_.serverUrl()));
-
-    // Set SSL options if enabled
-    if (k8sUrl_.encrypted())
-    {
-        cx_->SetCertPath(caCertFile_);
-        // Convert file extension to cert type.
-        // e.g. -- cert.pem => "PEM", cert.p12 => "P12"
-        cx_->SetCertType(k8s::client::CertType(caCertFile_));
-    }
+    k8s::client::InitConnection(cx_, k8sUrl_, caCertFile_);
 
     // Use the connection context to get API metadata
     RestClient::Response response = cx_->get(k8sUrl_.apiPath());
@@ -194,7 +185,7 @@ void K8sClient::StartWatch(
 
     // We look up the type to watch with the kind, but watcher needs the name
     kindInfo->second.watcher.reset(
-        new K8sWatcher(k8sUrl_, kindInfo->second.name, watchCb));
+        new K8sWatcher(k8sUrl_, kindInfo->second.name, watchCb, caCertFile_));
     kindInfo->second.watcher->StartWatch(
         kindInfo->second.resourceVersion, retryDelay);
 }

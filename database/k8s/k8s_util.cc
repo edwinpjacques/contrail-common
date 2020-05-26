@@ -3,15 +3,34 @@
 //
 
 #include "k8s_util.h"
+#include <restclient-cpp/connection.h>
 
-std::string k8s::client::CertType(const std::string& caCertPath)
+std::string k8s::client::CertType(const std::string& caCertFile)
 {
     std::string type;
-    auto extension = caCertPath.rfind('.');
-    type = caCertPath.substr(extension + 1);
+    auto extension = caCertFile.rfind('.');
+    type = caCertFile.substr(extension + 1);
     for (auto i = type.begin(); i != type.end(); i++)
     {
         *i = toupper(*i);
     }
     return type;
+}
+
+void k8s::client::InitConnection(k8s::client::ConnectionPtr& cx, 
+                                 const k8s::client::K8sUrl& k8sUrl, 
+                                 const std::string& caCertFile)
+{
+    // Create connection context
+    cx.reset(new RestClient::Connection(k8sUrl.serverUrl()));
+
+    // Set SSL options if enabled
+    if (k8sUrl.encrypted())
+    {
+        std::string certType = k8s::client::CertType(caCertFile);
+        cx->SetCertPath(caCertFile);
+        cx->SetCertType(certType);
+        cx->SetKeyPath(caCertFile);
+        cx->SetKeyType(certType);
+    }
 }

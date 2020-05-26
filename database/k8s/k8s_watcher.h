@@ -93,7 +93,7 @@ protected:
     std::string version_;
     boost::scoped_ptr<K8sWatcherResponse> response_;
     std::string watchPath() { 
-        return k8sUrl_.namePath(name_) + "?watch=1%26resourceVersion=" + version_; 
+        return k8sUrl_.namePath(name_) + "?watch=1&resourceVersion=" + version_; 
     }
     boost::scoped_ptr<boost::thread> threadPtr_;
 };
