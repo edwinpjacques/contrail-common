@@ -673,8 +673,44 @@ void ConfigK8sClient::K8sJsonConvert(
     // add id_perms to the dom
     cass_dom.AddMember("id_perms", idperms_val, cass_dom.GetAllocator());
 
+    // Add annotation properties
+    Value key_value_pairs;
+    key_value_pairs.SetArray();
+    if (metadata != dom.MemberEnd() && annotations != metadata->value.MemberEnd())
+    {
+        for(auto annotation = annotations->value.MemberBegin(); 
+            annotation != annotations->value.MemberEnd();
+            ++annotation)
+        {
+            string annotation_name = annotation->name.GetString();
+            if (annotation_name.find("core.juniper.net/description") != string::npos ||
+                annotation_name.find("core.juniper.net/display-name") != string::npos)
+            {
+                continue;
+            }
+            // For each annotation, create a key/value pair object
+            Value key_value_pair;
+            Value key;
+            Value value;
+            key.CopyFrom(annotation->name, cass_dom.GetAllocator());
+            value.CopyFrom(annotation->value, cass_dom.GetAllocator());
+            key_value_pair.SetObject();
+            key_value_pair.AddMember("key", key, cass_dom.GetAllocator());
+            key_value_pair.AddMember("value", value, cass_dom.GetAllocator());
+            // Finally, add it to the key_value_pair array
+            key_value_pairs.PushBack(key_value_pair, cass_dom.GetAllocator());
+        }
+        if (key_value_pairs.GetArray().Size() > 0)
+        {
+            Value annotation;
+            annotation.SetObject();
+            annotation.AddMember("key_value_pair", key_value_pairs, cass_dom.GetAllocator());
+            cass_dom.AddMember("annotations", annotation, cass_dom.GetAllocator());
+        }
+    }
+
     // Look for properties in the status.
-    for(Value::ConstMemberIterator status_member = status->value.MemberBegin(); 
+    for(auto status_member = status->value.MemberBegin(); 
         status_member != status->value.MemberEnd(); 
         ++status_member)
     {
