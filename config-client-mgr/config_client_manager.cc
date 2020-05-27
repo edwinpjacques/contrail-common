@@ -99,7 +99,8 @@ void ConfigClientManager::SetDefaultSchedulingPolicy() {
 
     // Policy for k8s::K8sWatcher process
     TaskPolicy k8s_watcher_policy = boost::assign::list_of
-        (TaskExclusion(scheduler->GetTaskId("config_client::Init")));
+        (TaskExclusion(scheduler->GetTaskId("config_client::Init")))
+        (TaskExclusion(scheduler->GetTaskId("config_client::DBReader")));
     scheduler->SetPolicy(scheduler->GetTaskId("k8s::K8sWatcher"),
         k8s_watcher_policy);
 }
@@ -279,6 +280,11 @@ bool ConfigClientManager::InitConfigClient() {
 
     // Common code path for both init/reinit
     if (config_options_.config_db_use_k8s) {
+        // For do the bulk gets first.
+        CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
+            "Config Client Mgr SM: Init Database");
+        config_db_client_->InitDatabase();
+        // Then start the watch threads.
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
             "Config Client Mgr SM: Start K8S Watcher");
         config_db_client_->StartWatcher();
@@ -286,12 +292,12 @@ bool ConfigClientManager::InitConfigClient() {
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
             "Config Client Mgr SM: Start RabbitMqReader and init Database");
         config_amqp_client_->StartRabbitMQReader();
+
+        CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
+            "Config Client Mgr SM: Init Database");
+        config_db_client_->InitDatabase();
     }
 
-    CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug,
-            "Config Client Mgr SM: Init Database");
-
-    config_db_client_->InitDatabase();
     if (is_reinit_triggered()) return false;
     return true;
 }

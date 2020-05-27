@@ -96,10 +96,18 @@ ConfigK8sClient::ConfigK8sClient(ConfigClientManager *mgr,
       num_workers_(num_workers)
 {
     // Initialize map of K8s property names to Cassandra JSON
-    k8s_name_conversion_["attributes"] = "attr";
-    k8s_name_conversion_["NetworkIPAM"] = "network_ipam";
-    k8s_name_conversion_["InstanceIP"] = "instance_ip";
-    k8s_name_conversion_["BGPRouter"] = "bgp_router";
+    k8s_to_cass_name_conversion_["attributes"] = "attr";
+    k8s_to_cass_name_conversion_["NetworkIPAM"] = "network_ipam";
+    k8s_to_cass_name_conversion_["InstanceIP"] = "instance_ip";
+    k8s_to_cass_name_conversion_["BGPRouter"] = "bgp_router";
+
+    // Automatically populate a reverse map as well
+    for(auto key_value = k8s_to_cass_name_conversion_.begin(); 
+        key_value != k8s_to_cass_name_conversion_.end(); 
+        ++key_value)
+    {
+        cass_to_k8s_name_conversion_[key_value->second] = key_value->first;
+    }
 
     std::string server = config_db_ips().empty() ? "127.0.0.1" : config_db_ips()[0];
     size_t port = GetFirstConfigDbPort();
@@ -333,6 +341,14 @@ void ConfigK8sClient::UUIDToLongLongs(
 // name to K8s format (CamelCase).
 string ConfigK8sClient::CassTypeToK8sKind(const std::string& cass_type)
 {
+    // First, look for special-cases
+    auto override = cass_to_k8s_name_conversion_.find(cass_type);
+    if (override != cass_to_k8s_name_conversion_.end())
+    {
+        return override->second;
+    }
+
+    // Otherwise, convert name algrithmically
     string ret;
     bool last_char_underscore = false;
     for (size_t i = 0; i < cass_type.length(); ++i)
@@ -377,8 +393,8 @@ string ConfigK8sClient::K8sNameConvert(
     const char* name, unsigned length)
 {
     // First, look for hard-coded mapping
-    auto conversion = k8s_name_conversion_.find(name);
-    if (conversion != k8s_name_conversion_.end())
+    auto conversion = k8s_to_cass_name_conversion_.find(name);
+    if (conversion != k8s_to_cass_name_conversion_.end())
     {
         return conversion->second;
     }
@@ -669,6 +685,11 @@ void ConfigK8sClient::K8sJsonConvert(
         // finally, add uuid to id_perms
         idperms_val.AddMember("uuid", idperm_uuid, cass_dom.GetAllocator());
     }
+
+    // idperms must have the enable flag set
+    Value enable;
+    enable.SetString("true", cass_dom.GetAllocator());
+    idperms_val.AddMember("enable", enable, cass_dom.GetAllocator());
 
     // add id_perms to the dom
     cass_dom.AddMember("id_perms", idperms_val, cass_dom.GetAllocator());

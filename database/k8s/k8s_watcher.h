@@ -30,6 +30,7 @@ struct K8sWatcherResponse : public RestClient::Response
     K8sWatcherResponse(K8sWatcher *w) : watcher(w) 
     {}
     K8sWatcher *watcher;
+    std::string lastResponse;
 };
 
 /**
@@ -78,10 +79,15 @@ public:
      * @brief Stops a watch thread
      */
     void StopWatch();
+    /**
+     * @brief Check if the watcher is stopping.
+     */
+    bool Stopping() { return threadPtr_->interruption_requested(); }
 
     const K8sUrl& k8sUrl() const { return k8sUrl_; }
     const std::string& name() const { return name_; }
     const std::string& version() const { return version_; }
+    void SetVersion(const std::string& version) { version_ = version; }
     WatchCb watchCb() const { return watchCb_; }
 
 protected:

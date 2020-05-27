@@ -5,6 +5,12 @@
 #include "k8s_util.h"
 #include <restclient-cpp/connection.h>
 
+namespace k8s {
+    namespace client {
+        size_t Timeout = 5;
+    }
+}
+
 std::string k8s::client::CertType(const std::string& caCertFile)
 {
     std::string type;
@@ -23,6 +29,9 @@ void k8s::client::InitConnection(k8s::client::ConnectionPtr& cx,
 {
     // Create connection context
     cx.reset(new RestClient::Connection(k8sUrl.serverUrl()));
+
+    // Set I/O timeout
+    cx->SetTimeout(k8s::client::Timeout);
 
     // Set SSL options if enabled
     if (k8sUrl.encrypted())

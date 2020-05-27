@@ -224,7 +224,7 @@ public:
         const string& uuid, unsigned long long longs[]);
 
     // Convert a Cassandra type name into a Kubernetes type name
-    static string CassTypeToK8sKind(const std::string& cass_type);
+    string CassTypeToK8sKind(const std::string& cass_type);
 
     // Convert an fq_name value to a string.
     // Optionally truncate values from the end.
@@ -297,7 +297,8 @@ private:
     tbb::atomic<long> bulk_sync_status_;
 
     // "special case" K8s to cassandra JSON name mapping.
-    map<string, string> k8s_name_conversion_;
+    map<string, string> k8s_to_cass_name_conversion_;
+    map<string, string> cass_to_k8s_name_conversion_;
 };
 
 #endif // config_k8s_client_h

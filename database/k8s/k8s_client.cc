@@ -22,6 +22,21 @@ SandeshTraceBufferPtr K8sClientTraceBuf(SandeshTraceBufferCreate(
      K8S_CLIENT_TRACE_BUF, 10000));
 
 
+namespace k8s {
+    namespace client {
+        // Run once before exit
+        struct RestClientCleanup {
+            RestClientCleanup() {
+                RestClient::init();
+            }
+            ~RestClientCleanup() {
+                RestClient::disable();
+            }
+        } RestClientCleanup;
+    }
+}
+
+
 K8sClient::K8sClient(const ::K8sUrl &k8sUrl,
                      const std::string &caCertFile,
                      size_t fetchLimit)
@@ -32,14 +47,11 @@ K8sClient::K8sClient(const ::K8sUrl &k8sUrl,
     std::ostringstream o;
     o << fetchLimit_;
     fetchLimitString_ = o.str();
-
-    RestClient::init();
 }
 
 K8sClient::~K8sClient ()
 {
     StopWatchAll();
-    RestClient::disable();
 }
 
 int K8sClient::Init()
@@ -157,10 +169,16 @@ int K8sClient::BulkGet(const std::string &kind,
 
             // get revision for subsequent watch call
             auto metadata = bulkData.FindMember("metadata");
-            kindInfoMap_[kind].resourceVersion = metadata->value.FindMember("resourceVersion")->value.GetString();
+            string resourceVersion = 
+                metadata->value.FindMember("resourceVersion")->value.GetString();
+            kindInfoMap_[kind].resourceVersion = resourceVersion;
             // get continue token (if any)
             auto continueValue = metadata->value.FindMember("continue");
-            continueToken = (continueValue == metadata->value.MemberEnd() ? "" : continueValue->value.GetString());
+            continueToken = 
+                (continueValue == metadata->value.MemberEnd() ? 
+                    "" : continueValue->value.GetString());
+
+            K8S_CLIENT_DEBUG(K8sDebug, "K8S CLIENT: " << kind << " BulkGet version " << resourceVersion);
         } while (!continueToken.empty());
     }
     catch(const std::exception& e)

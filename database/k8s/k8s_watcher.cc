@@ -6,9 +6,10 @@
 #include "k8s_types.h"
 #include "k8s_client_log.h"
 #include "k8s_util.h"
-#include <unistd.h>
 #include <sstream>
 #include <algorithm>
+#include <unistd.h>
+#include <signal.h>
 
 using namespace boost;
 using namespace k8s::client;
@@ -20,6 +21,12 @@ size_t k8s::client::K8sWatcherWriteCallback(
     size_t bytes = size * nmemb;
     try
     {
+        // If we're stopping, just return quickly
+        if (userdata->watcher->Stopping())
+        {
+            // Results in CURLE_WRITE_ERROR to caller.
+            return 0;
+        }
         // Add to the buffer
         userdata->body.append(static_cast<char*>(data), bytes);
         // If the last character is not a new line, wait for the rest.
@@ -39,22 +46,33 @@ size_t k8s::client::K8sWatcherWriteCallback(
                 K8S_CLIENT_WARN(K8sDebug, 
                     std::string("K8S CLIENT: Invalid JSON: ") + 
                     eventString.c_str());
-                return CURLE_WRITE_ERROR;
+                return 0;
             }
             auto type = eventDom.FindMember("type");
-            if (type == eventDom.MemberEnd())
+            std::string typeStr = eventDom.FindMember("type")->value.GetString();
+            if (type == eventDom.MemberEnd() || typeStr == "ERROR")
             {
                 K8S_CLIENT_WARN(K8sDebug, 
-                    std::string("K8S CLIENT: Error Watch Response: ") + 
-                    eventString.c_str());
-                return CURLE_WRITE_ERROR;
+                    std::string("K8S CLIENT: ") + userdata->watcher->name() + " error watch response: " +
+                    eventString.c_str()); 
+                userdata->lastResponse = eventString;
+                return 0;
             }
-            std::string typeStr = eventDom.FindMember("type")->value.GetString();
             DomPtr objectDomPtr(new Document);
-            objectDomPtr->CopyFrom(eventDom.FindMember("object")->value, objectDomPtr->GetAllocator());
+            auto object = eventDom.FindMember("object");
+            objectDomPtr->CopyFrom(object->value, objectDomPtr->GetAllocator());
 
             // Pass type and object payload to callback
             userdata->watcher->watchCb()(typeStr, objectDomPtr);
+
+            // Persist the version
+            auto metadata = object->value.FindMember("metadata");
+            auto resourceVersion = metadata->value.FindMember("resourceVersion");
+            userdata->watcher->SetVersion(resourceVersion->value.GetString());
+            K8S_CLIENT_DEBUG(K8sDebug, 
+                "K8S CLIENT: " << userdata->watcher->name() << 
+                " version set to " << resourceVersion->value.GetString() << '.');
+
         }
         // Done with the string
         userdata->body.clear();
@@ -62,9 +80,9 @@ size_t k8s::client::K8sWatcherWriteCallback(
     catch(std::exception e)
     {
         K8S_CLIENT_WARN(K8sDebug, std::string("K8S CLIENT: Unhandled exception: ") + e.what());
-        return CURLE_WRITE_ERROR;
+        return 0;
     }
-    return CURLE_OK;
+    return bytes;
 }
 
 K8sWatcher::K8sWatcher(
@@ -89,32 +107,60 @@ void K8sWatcher::Watch(const std::string& version, size_t retryDelay)
     // Provide it with a back-pointer to this watch object.
     response_.reset(new K8sWatcherResponse(this));
 
+    K8S_CLIENT_DEBUG(K8sDebug, "K8S CLIENT: " << name_ << 
+                     " watch started, version " << version << ".");
+
     while(true)
     {
         try
         {
+            // Break if we're stopping.
+            if (Stopping())
+            {
+                // Stop requested
+                K8S_CLIENT_DEBUG(K8sDebug, 
+                    "K8S CLIENT: " << name_ << " watch stopping.");
+                break;
+            }
+
             // Initiate the watch.
             // The response structure will receive watch data via callback.
             cx_->get(watchPath(), *response_);
+
+            // On success or timeout, restart watch immediately.  Otherwise, sleep.
+            if (response_->code == 200 || response_->code == CURLE_OPERATION_TIMEDOUT)
+            {
+                continue;
+            }
+            else if (response_->code == CURLE_WRITE_ERROR)
+            {
+                // 410 means the watch is out of sync and a new bulk-sync is required.
+                // Kick off database re-initialization.
+                if (response_->lastResponse.rfind("\"code\":410") != std::string::npos)
+                {
+                    // Watch stopped, log it.
+                    K8S_CLIENT_DEBUG(
+                        K8sDebug, "K8S CLIENT: " << name_ << 
+                        " watch received 410 error, database re-init force-stopped with code " << response_->code);
+                    threadPtr_->interrupt();
+                    kill(0, SIGUSR1);
+                    break;
+                }
+            }
 
             // Watch stopped, log it.
             K8S_CLIENT_DEBUG(
                 K8sDebug, "K8S CLIENT: " << name_ << 
                 " watch stopped with code " << response_->code);
 
-            // On success, restart watch immediately.  Otherwise, sleep.
-            if (response_->code == 200)
-            {
-                continue;
-            }
-            sleep(retryDelay);
+            boost::this_thread::sleep(boost::posix_time::seconds(retryDelay));
         }
-        catch(const std::runtime_error& e)
+        catch(const std::exception& e)
         {
             // Log termination request and exit
             K8S_CLIENT_DEBUG(
                 K8sDebug, "K8S CLIENT: " << name_ << 
-                " watch runtime error: " << e.what());
+                " watch error: " << e.what());
             break;
         }
     }
@@ -124,14 +170,15 @@ void K8sWatcher::Terminate()
 {
     if (cx_) 
     {
-        cx_->Terminate();
         if (threadPtr_)
         {
             K8S_CLIENT_DEBUG(
                 K8sDebug, "K8S CLIENT: " << name_ << " watch terminated.");
+            threadPtr_->interrupt();
             threadPtr_->join();
             threadPtr_.reset();
         }
+        cx_.reset();
     }
 }
 
@@ -145,7 +192,7 @@ void K8sWatcher::StartWatch(const std::string& version, size_t retryDelay)
     }
 
     threadPtr_.reset(new boost::thread(boost::bind(&K8sWatcher::Watch, 
-                    this, version, retryDelay)));
+                     this, version, retryDelay)));
     K8S_CLIENT_DEBUG(
         K8sDebug, "K8S CLIENT: " << name_ << " watch thread started.");
 }
