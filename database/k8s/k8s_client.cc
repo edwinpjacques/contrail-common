@@ -36,11 +36,11 @@ namespace k8s {
     }
 }
 
-
-K8sClient::K8sClient(const ::K8sUrl &k8sUrl,
+K8sClient::K8sClient(const std::vector<K8sUrl> &k8sUrls,
                      const std::string &caCertFile,
+                     size_t rotate,
                      size_t fetchLimit)
-  : k8sUrl_(k8sUrl),
+  : k8sUrls_(k8sUrls, rotate),
     caCertFile_(caCertFile),
     fetchLimit_(fetchLimit)
 {
@@ -65,34 +65,58 @@ int K8sClient::Init()
     // Resolve the address of the configuration service
     boost::asio::io_service ioService;
     tcp::resolver resolver(ioService);
-    // Form the query of the service by name (or IP) and port
-    tcp::resolver::query query(
-        k8sUrl_.server(), k8sUrl_.port(),
-        tcp::resolver::query::numeric_service);
-    // Get a list of endpoints corresponding to the server name
-    boost::system::error_code ec;
-    tcp::resolver::iterator endpointIterator = resolver.resolve(query, ec);
-    // Make sure we can resolve the DNS name
-    if (ec != 0)
+
+    for(size_t i = 0; i < k8sUrls_.size(); ++i, k8sUrls_.rotate())
     {
-        K8S_CLIENT_DEBUG(
-            K8sDebug, "K8S CLIENT: Could not resolve address for server " 
-                      << k8sUrl_.server() << ", " << ec.message());
+        // Form the query of the service by name (or IP) and port
+        tcp::resolver::query query(
+            k8sUrl().server(), k8sUrl().port(),
+            tcp::resolver::query::numeric_service);
+        // Get a list of endpoints corresponding to the server name
+        boost::system::error_code ec;
+        tcp::resolver::iterator endpointIterator = resolver.resolve(query, ec);
+        // Make sure we can resolve the DNS name
+        if (ec != 0)
+        {
+            K8S_CLIENT_WARN(K8sDebug, 
+                "K8S CLIENT: Could not resolve address for server " 
+                + k8sUrl().server() + ", " + ec.message());
+            return EXIT_FAILURE;
+        }
+        else
+        {
+            // Only save the addresses that we could resolve.
+            endpoints_.push_back(*endpointIterator);
+        }
+    }
+
+    RestClient::Response response;
+
+    for (size_t i = 0; i < k8sUrls_.size(); ++i, k8sUrls_.rotate())
+    {
+        // Create connection context
+        k8s::client::InitConnection(cx_, k8sUrl(), caCertFile_);
+
+        // Use the connection context to get API metadata
+        response = cx_->get(k8sUrl().apiPath());
+        if (response.code != 200) {
+            K8S_CLIENT_WARN(K8sDebug, 
+                "K8S CLIENT: Unexpected reponse from API server: " +
+                response.body);
+            continue;
+        }
+        break;
+    }
+    if (response.code != 200)
+    {
+        K8S_CLIENT_WARN(K8sDebug, "K8S CLIENT: No API servers available.");
+        RequestResync();
         return EXIT_FAILURE;
     }
-    endpoints_.push_back(*endpointIterator);
 
-    // Create connection context
-    k8s::client::InitConnection(cx_, k8sUrl_, caCertFile_);
-
-    // Use the connection context to get API metadata
-    RestClient::Response response = cx_->get(k8sUrl_.apiPath());
-    if (response.code != 200) {
-        K8S_CLIENT_DEBUG(
-            K8sDebug, "K8S CLIENT: Unexpected reponse from API server: " << 
-                      response.code << ", body: " << response.body);
-        return EXIT_FAILURE;
-    }
+    K8S_CLIENT_WARN(
+        K8sDebug, string("K8S CLIENT: ") +
+        " connected to K8s API service: " + k8sUrl().apiUrl());
 
     try
     {
@@ -121,7 +145,7 @@ int K8sClient::Init()
     }
     catch(const std::exception& e)
     {
-        K8S_CLIENT_DEBUG(K8sDebug, "K8S CLIENT: Error parsing API metadata: " << e.what());
+        K8S_CLIENT_WARN(K8sDebug, string("K8S CLIENT: Error parsing API metadata: ") + e.what());
         return EXIT_FAILURE;
     }
 
@@ -135,11 +159,11 @@ int K8sClient::BulkGet(const std::string &kind,
     auto kindInfoFound = kindInfoMap_.find(kind);
     if (kindInfoFound == kindInfoMap_.end())
     {
-        K8S_CLIENT_DEBUG(K8sDebug, "K8S CLIENT: Kind not supported: " << kind);
+        K8S_CLIENT_WARN(K8sDebug, string("K8S CLIENT: Kind not supported: ") + kind);
         return 400;
     }
 
-    std::string bulkGetPath = k8sUrl_.namePath(kindInfoFound->second.name) + 
+    std::string bulkGetPath = k8sUrl().namePath(kindInfoFound->second.name) + 
         "?limit=" + fetchLimitString_;
     try
     {
@@ -149,9 +173,9 @@ int K8sClient::BulkGet(const std::string &kind,
             RestClient::Response response = cx_->get(bulkGetPath + 
                 (continueToken.empty() ? "" : "&continue=" + continueToken));
             if (response.code != 200) {
-                K8S_CLIENT_DEBUG(
-                    K8sDebug, "K8S CLIENT: Unexpected reponse from API server: " << 
-                            response.code << ", body: " << response.body);
+                K8S_CLIENT_WARN(K8sDebug, 
+                    string("K8S CLIENT: Unexpected reponse from API server: ") + 
+                    response.body);
                 return response.code;
             }
             // Parse the response received.
@@ -183,7 +207,7 @@ int K8sClient::BulkGet(const std::string &kind,
     }
     catch(const std::exception& e)
     {
-        K8S_CLIENT_DEBUG(K8sDebug, "K8S CLIENT: Error parsing bulk data: " << e.what());
+        K8S_CLIENT_WARN(K8sDebug, string("K8S CLIENT: Error parsing bulk data: ") + e.what());
         return 400;
     }
 
@@ -203,7 +227,7 @@ void K8sClient::StartWatch(
 
     // We look up the type to watch with the kind, but watcher needs the name
     kindInfo->second.watcher.reset(
-        new K8sWatcher(k8sUrl_, kindInfo->second.name, watchCb, caCertFile_));
+        new K8sWatcher(k8sUrls(), kindInfo->second.name, watchCb, caCertFile_));
     kindInfo->second.watcher->StartWatch(
         kindInfo->second.resourceVersion, retryDelay);
 }

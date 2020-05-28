@@ -49,8 +49,11 @@ size_t k8s::client::K8sWatcherWriteCallback(
                 return 0;
             }
             auto type = eventDom.FindMember("type");
-            std::string typeStr = eventDom.FindMember("type")->value.GetString();
-            if (type == eventDom.MemberEnd() || typeStr == "ERROR")
+            std::string typeStr =
+                type != eventDom.MemberEnd() ?
+                    eventDom.FindMember("type")->value.GetString() :
+                    "";
+            if (typeStr.empty() || typeStr == "ERROR")
             {
                 K8S_CLIENT_WARN(K8sDebug, 
                     std::string("K8S CLIENT: ") + userdata->watcher->name() + " error watch response: " +
@@ -72,7 +75,6 @@ size_t k8s::client::K8sWatcherWriteCallback(
             K8S_CLIENT_DEBUG(K8sDebug, 
                 "K8S CLIENT: " << userdata->watcher->name() << 
                 " version set to " << resourceVersion->value.GetString() << '.');
-
         }
         // Done with the string
         userdata->body.clear();
@@ -86,19 +88,19 @@ size_t k8s::client::K8sWatcherWriteCallback(
 }
 
 K8sWatcher::K8sWatcher(
-    const K8sUrl& k8sUrl, const std::string& name, 
+    const K8sUrls& k8sUrls, const std::string& name, 
     k8s::client::WatchCb watchCb, const std::string& caCertFile)
-: k8sUrl_(k8sUrl), name_(name), watchCb_(watchCb), caCertFile_(caCertFile)
+: k8sUrls_(k8sUrls), name_(name), watchCb_(watchCb), caCertFile_(caCertFile)
 {}
 
-void K8sWatcher::Watch(const std::string& version, size_t retryDelay)
+void K8sWatcher::InitConnection()
 {
-    // Save the version (of the last bulk get).
-    // Used to formulate the watch query.
-    version_ = version;
+    K8S_CLIENT_WARN(
+        K8sDebug, string("K8S CLIENT: ") + name_ +
+        " watch connecting to " + k8sUrl().serverUrl());
 
     // Create connection context
-    k8s::client::InitConnection(cx_, k8sUrl_, caCertFile_);
+    k8s::client::InitConnection(cx_, k8sUrl(), caCertFile_);
 
     // Set the callback used to process response
     cx_->SetWriteFunction(
@@ -106,6 +108,16 @@ void K8sWatcher::Watch(const std::string& version, size_t retryDelay)
     // Create the response context to handle receiving streamed data.
     // Provide it with a back-pointer to this watch object.
     response_.reset(new K8sWatcherResponse(this));
+}
+
+void K8sWatcher::Watch(const std::string& version, size_t retryDelay)
+{
+    // Save the version (of the last bulk get).
+    // Used to formulate the watch query.
+    version_ = version;
+
+    // Initialize the connection context
+    InitConnection();
 
     K8S_CLIENT_DEBUG(K8sDebug, "K8S CLIENT: " << name_ << 
                      " watch started, version " << version << ".");
@@ -132,35 +144,41 @@ void K8sWatcher::Watch(const std::string& version, size_t retryDelay)
             {
                 continue;
             }
-            else if (response_->code == CURLE_WRITE_ERROR)
+            
+            if (response_->code == CURLE_WRITE_ERROR)
             {
                 // 410 means the watch is out of sync and a new bulk-sync is required.
-                // Kick off database re-initialization.
                 if (response_->lastResponse.rfind("\"code\":410") != std::string::npos)
                 {
-                    // Watch stopped, log it.
-                    K8S_CLIENT_DEBUG(
-                        K8sDebug, "K8S CLIENT: " << name_ << 
-                        " watch received 410 error, database re-init force-stopped with code " << response_->code);
-                    threadPtr_->interrupt();
-                    kill(0, SIGUSR1);
+                    K8S_CLIENT_WARN(
+                        K8sDebug, string("K8S CLIENT: ") + name_ + 
+                        " watch received 410 error, database out of sync: " + 
+                        response_->body);
+
+                    // Kick off database re-initialization.
+                    k8s::client::RequestResync();
                     break;
                 }
             }
+            
+            K8S_CLIENT_WARN(
+                K8sDebug, string("K8S CLIENT: ") + name_ + 
+                " watch failed, " + response_->body + ", " +
+                k8sUrl().apiUrl());
 
-            // Watch stopped, log it.
-            K8S_CLIENT_DEBUG(
-                K8sDebug, "K8S CLIENT: " << name_ << 
-                " watch stopped with code " << response_->code);
+            // try another server
+            k8sUrls_.rotate();
+
+            InitConnection();
 
             boost::this_thread::sleep(boost::posix_time::seconds(retryDelay));
         }
         catch(const std::exception& e)
         {
             // Log termination request and exit
-            K8S_CLIENT_DEBUG(
-                K8sDebug, "K8S CLIENT: " << name_ << 
-                " watch error: " << e.what());
+            K8S_CLIENT_WARN(
+                K8sDebug, string("K8S CLIENT: ") + name_ + 
+                " watch error: " + e.what());
             break;
         }
     }

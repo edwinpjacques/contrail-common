@@ -48,7 +48,7 @@ public:
      * @param caCertFile CA certs file path to use for HTTPS.
      */
     K8sWatcher(
-        const K8sUrl& k8sUrl, const std::string& name, 
+        const K8sUrls& k8sUrls, const std::string& name, 
         k8s::client::WatchCb watchCb, const std::string& caCertFile = "");
     /**
      * @brief Destructor.  Implicitly stops the watcher.
@@ -74,34 +74,43 @@ public:
      * @param Number of seconds to wait after a connection failure to 
      *               try to re-establish the connection.
      */
-    void StartWatch(const std::string& version = "", size_t retryDelay = 60);
+    void StartWatch(const std::string& version = "", size_t retryDelay = 10);
     /**
      * @brief Stops a watch thread
      */
     void StopWatch();
     /**
-     * @brief Check if the watcher is stopping.
+     * @brief: Check if the watcher is stopping.
      */
     bool Stopping() { return threadPtr_->interruption_requested(); }
 
-    const K8sUrl& k8sUrl() const { return k8sUrl_; }
+    const K8sUrl& k8sUrl() const { return k8sUrls_.k8sUrl(); }
     const std::string& name() const { return name_; }
     const std::string& version() const { return version_; }
     void SetVersion(const std::string& version) { version_ = version; }
     WatchCb watchCb() const { return watchCb_; }
 
 protected:
-    const K8sUrl k8sUrl_;
+    K8sUrls k8sUrls_;
     const std::string name_;
     WatchCb watchCb_;
     const std::string caCertFile_;
     boost::scoped_ptr<RestClient::Connection> cx_;
     std::string version_;
     boost::scoped_ptr<K8sWatcherResponse> response_;
-    std::string watchPath() { 
-        return k8sUrl_.namePath(name_) + "?watch=1&resourceVersion=" + version_; 
-    }
     boost::scoped_ptr<boost::thread> threadPtr_;
+
+    /**
+     * @brief: Compute the watch path
+     */
+    std::string watchPath() { 
+        return k8sUrl().namePath(name_) + "?watch=1&resourceVersion=" + version_; 
+    }
+
+    /**
+     * @brief: (Re-)initialize a connection (cx_).
+     */
+    void InitConnection();
 };
 
 /**

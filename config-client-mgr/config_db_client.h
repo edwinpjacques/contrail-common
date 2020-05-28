@@ -60,6 +60,7 @@ public:
     std::string config_db_user() const;
     std::string config_db_password() const;
     std::vector<std::string> config_db_ips() const;
+    const std::vector<int> config_db_ports() const;
     int GetFirstConfigDbPort() const;
     virtual void PostShutdown() = 0;
     virtual void InitDatabase() = 0;

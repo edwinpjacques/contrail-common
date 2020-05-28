@@ -25,13 +25,18 @@ typedef boost::scoped_ptr<RestClient::Connection> ConnectionPtr;
 std::string CertType(const std::string& caCertFile);
 
 /**
- *  Initialize a connection (cx)
- *  Requires a string for which to create the connection.
- *  caCertFile is only required for SSL.
+ * Initialize a connection (cx)
+ * Requires a string for which to create the connection.
+ * caCertFile is only required for SSL.
  */
 void InitConnection(ConnectionPtr& cx, 
                     const K8sUrl& k8sUrl, 
                     const std::string& caCertFile);
+
+/**
+ * Tell controlling process to reload configuration and ifmap data.
+ */
+void RequestResync();
 
 } //namespace client
 } //namespace k8s

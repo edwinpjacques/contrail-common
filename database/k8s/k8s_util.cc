@@ -3,7 +3,11 @@
 //
 
 #include "k8s_util.h"
+
 #include <restclient-cpp/connection.h>
+
+#include <sys/types.h>
+#include <signal.h>
 
 namespace k8s {
     namespace client {
@@ -42,4 +46,9 @@ void k8s::client::InitConnection(k8s::client::ConnectionPtr& cx,
         cx->SetKeyPath(caCertFile);
         cx->SetKeyType(certType);
     }
+}
+
+void k8s::client::RequestResync()
+{
+    kill(0, SIGUSR1);
 }

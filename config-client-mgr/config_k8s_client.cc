@@ -109,15 +109,21 @@ ConfigK8sClient::ConfigK8sClient(ConfigClientManager *mgr,
         cass_to_k8s_name_conversion_[key_value->second] = key_value->first;
     }
 
-    std::string server = config_db_ips().empty() ? "127.0.0.1" : config_db_ips()[0];
-    size_t port = GetFirstConfigDbPort();
-    ostringstream service_url;
-    service_url << (options.config_db_use_ssl ? "https" : "http") << "://" << server << ':' << port << "/apis";
-    K8sUrl k8s_url(service_url.str(), api_group_, api_version_);
+    std::vector<K8sUrl> k8sUrls;
+    for(size_t i = 0; i < config_db_ips().size(); ++i)
+    {
+        std::string server = config_db_ips().empty() ? "127.0.0.1" : config_db_ips()[i];
+        size_t port = config_db_ports().empty() ? 8001 : config_db_ports()[i];
+        ostringstream service_url;
+        service_url << (options.config_db_use_ssl ? "https" : "http") << "://" << server << ':' << port << "/apis";
+        K8sUrl k8s_url(service_url.str(), api_group_, api_version_);
+        k8sUrls.push_back(k8s_url);
+    }
 
     k8s_client_.reset(ConfigFactory::Create<K8sClient>(
-        k8s_url,
+        k8sUrls,
         options.config_db_ca_certs,
+        0,
         GetNumReadRequestToBunch()));
     InitConnectionInfo();
     bulk_sync_status_ = 0;
@@ -252,7 +258,7 @@ void ConfigK8sClient::InitDatabase()
     while (true)
     {
         CONFIG_CLIENT_DEBUG(ConfigClientMgrDebug, "K8S SM: Db Init");
-        if (k8s_client_->Init() != 0)
+        if (k8s_client_->Init() != EXIT_SUCCESS)
         {
             CONFIG_CLIENT_DEBUG(ConfigK8sClientInitErrorMessage,
                                 "Database initialization failed");
@@ -704,9 +710,10 @@ void ConfigK8sClient::K8sJsonConvert(
             ++annotation)
         {
             string annotation_name = annotation->name.GetString();
-            if (annotation_name.find("core.juniper.net/description") != string::npos ||
-                annotation_name.find("core.juniper.net/display-name") != string::npos)
+            if (annotation_name.find("/") != string::npos)
             {
+                // skip all system properties like
+                // "core.juniper.net/description"
                 continue;
             }
             // For each annotation, create a key/value pair object

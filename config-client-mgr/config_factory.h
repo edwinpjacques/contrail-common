@@ -43,9 +43,10 @@ class ConfigFactory : public Factory<ConfigFactory> {
                     int);
     FACTORY_TYPE_N2(ConfigFactory, ConfigK8sPartition,
                     ConfigK8sClient *, size_t);
-    FACTORY_TYPE_N3(ConfigFactory, K8sClient,
-                    const K8sUrl &,
+    FACTORY_TYPE_N4(ConfigFactory, K8sClient,
+                    const std::vector<K8sUrl> &,
                     const std::string &,
+                    size_t,
                     size_t);
 };
 

@@ -33,16 +33,19 @@ class K8sClient {
 public:
     /**
      * Constructor that creates a Kubernetes client object.
-     * @param k8sUrl     Service address information for the 
-     *                   Kubernetes server.
+     * @param k8sUrls    Service address information for the 
+     *                   Kubernetes servers.
      * @param caCertFile CA cert file path to use for HTTPS.
      *                   Extension must be the type of cert.
      *                   e.g. "/path/cert.pem" or "/path/cert.p12"
+     * @param rotate     When there are multiple k8sUrl endpoints,
+     *                   which one to use first if rotating.
      * @param fetchLimit Maximum number of items to receive at once
      *                   when doing a get.
      */
-    K8sClient(const K8sUrl &k8sUrl,
+    K8sClient(const std::vector<K8sUrl> &k8sUrls,
               const std::string &caCertFile,
+              size_t rotate=0,
               size_t fetchLimit=defaultFetchLimit);
 
     /**
@@ -82,7 +85,7 @@ public:
      */
     virtual void StartWatch(const std::string &kind,
                             WatchCb watchCb,
-                            size_t retryDelay = 60);
+                            size_t retryDelay = 10);
 
     /**
      * Watch for changes for all types since the last BulkGet (for that type).
@@ -91,7 +94,7 @@ public:
      *                and the DomPtr for the obect.
      * @param retryDelay Time to wait between reconnect attempts.
      */
-    virtual void StartWatchAll(WatchCb watchCb, size_t retryDelay = 60);
+    virtual void StartWatchAll(WatchCb watchCb, size_t retryDelay = 10);
 
     /**
      * Stop a particular watch request.
@@ -106,8 +109,11 @@ public:
     /**
      * Getters
      */
-    const K8sUrl& k8sUrl() const { 
-        return k8sUrl_; 
+    const K8sUrls& k8sUrls() const { 
+        return k8sUrls_; 
+    }
+    const K8sUrl& k8sUrl() const {
+        return k8sUrls_.k8sUrl();
     }
     std::vector<Endpoint> endpoints() { 
         return endpoints_; 
@@ -141,7 +147,7 @@ public:
 
 protected:
     // Location of the K8s API server
-    K8sUrl k8sUrl_;
+    K8sUrls k8sUrls_;
     std::vector<Endpoint> endpoints_;
 
     // Configuration options

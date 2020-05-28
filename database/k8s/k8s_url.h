@@ -6,6 +6,7 @@
 #define DATABASE_K8S_URL_H_
 
 #include <string>
+#include <vector>
 
 namespace k8s {
 namespace client {
@@ -50,6 +51,24 @@ protected:
     std::string apiVersion_;
     std::string serverUrl_;
     std::string apiPath_;
+};
+
+/**
+ * @brief: Manage a set of K8sUrl object.  Allows for rotating through a set of them.
+ */
+class K8sUrls
+{
+    public:
+        K8sUrls(const std::vector<K8sUrl>& k8sUrls, size_t rotate = 0)
+            : k8sUrls_(k8sUrls), rotate_(rotate)
+        {}
+        void rotate() { ++rotate_; }
+        size_t size() const { return k8sUrls_.size(); }
+        const K8sUrl& k8sUrl() const { return k8sUrls_[rotate_ % k8sUrls_.size()]; }
+
+    protected:
+        std::vector<K8sUrl> k8sUrls_;
+        size_t rotate_;
 };
 
 } //namespace client
