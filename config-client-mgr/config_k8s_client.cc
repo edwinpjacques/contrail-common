@@ -949,7 +949,8 @@ void ConfigK8sClient::EnqueueUUIDRequest(string oper,
 
     // GetPartition uses the uuid so that the same
     // partition is returned for different requests on the
-    // same UUID
+    // same UUID.
+    // Note that you MUST requeue if requests come in out of order!
     GetPartition(uuid)->Enqueue(req);
 }
 
@@ -1357,6 +1358,22 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
                     Value &uuidVal = va["uuid"];
                     const string ref_uuid = uuidVal.GetString();
                     string ref_fq_name = client()->FindFQName(ref_uuid);
+
+                    // If we get the response back "ERROR", it is likely that
+                    // a request is being process out-of-order 
+                    // (e.g.-- global_system_config before referenced 
+                    // bgp_router).  In this case, we must requeue.
+                    if (ref_fq_name == "ERROR")
+                    {
+                        CONFIG_CLIENT_WARN(
+                            ConfigClientMgrDebug, 
+                            "Request to process object UUID " + uuid + 
+                            " before ref " + ref_uuid + ". Must requeue.");
+                        string req = add_change ? "ADDED" : "MODIFIED";
+                        this->Enqueue(
+                            new ObjectProcessReq(req, uuid, cache->GetJsonString()));
+                        return false;
+                    }
 
                     CONFIG_CLIENT_DEBUG(
                         ConfigClientMgrDebug, 
