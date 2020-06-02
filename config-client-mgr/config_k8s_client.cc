@@ -876,8 +876,8 @@ void ConfigK8sClient::EnqueueUUIDRequest(string oper,
     // Ignore all object without the state "Success"
     Value::MemberIterator status = dom.FindMember("status");
     if (status == dom.MemberEnd()) {
-        CONFIG_CLIENT_WARN(
-            ConfigClientMgrWarning, 
+        CONFIG_CLIENT_DEBUG(
+            ConfigClientMgrDebug, 
             "K8S SM: Received json object without status field. uuid: " + uuid
             + " value: " + value + ". Skipping");
         return;

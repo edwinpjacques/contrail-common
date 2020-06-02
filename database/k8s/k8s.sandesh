@@ -27,6 +27,14 @@ trace sandesh K8sDebugTrace {
 }
 
 /**
+ * @description: Event trace message for Kubernetes Client
+ * @severity: WARNING
+ */
+trace sandesh K8sWarningTrace {
+    1: string message;
+}
+
+/**
  * @description: Error trace  message for Kubernetes Client
  * @severity: DEBUG
  */

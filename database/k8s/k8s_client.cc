@@ -78,8 +78,8 @@ int K8sClient::Init()
         // Make sure we can resolve the DNS name
         if (ec != 0)
         {
-            K8S_CLIENT_WARN(K8sDebug, 
-                "K8S CLIENT: Could not resolve address for server " 
+            K8S_CLIENT_WARN(K8sWarning, 
+                string("K8S CLIENT: Could not resolve address for server ") 
                 + k8sUrl().server() + ", " + ec.message());
             return EXIT_FAILURE;
         }
@@ -100,22 +100,22 @@ int K8sClient::Init()
         // Use the connection context to get API metadata
         response = cx_->get(k8sUrl().apiPath());
         if (response.code != 200) {
-            K8S_CLIENT_WARN(K8sDebug, 
-                "K8S CLIENT: Unexpected reponse from API server: " +
-                response.body);
+            K8S_CLIENT_WARN(K8sWarning, 
+                "K8S CLIENT: Unexpected reponse from API server " +
+                k8sUrl().apiUrl() + ": " + response.body);
             continue;
         }
         break;
     }
     if (response.code != 200)
     {
-        K8S_CLIENT_WARN(K8sDebug, "K8S CLIENT: No API servers available.");
+        K8S_CLIENT_WARN(K8sWarning, "K8S CLIENT: No API servers available.");
         RequestResync();
         return EXIT_FAILURE;
     }
 
     K8S_CLIENT_WARN(
-        K8sDebug, string("K8S CLIENT: ") +
+        K8sWarning, string("K8S CLIENT: ") +
         " connected to K8s API service: " + k8sUrl().apiUrl());
 
     try
@@ -145,7 +145,7 @@ int K8sClient::Init()
     }
     catch(const std::exception& e)
     {
-        K8S_CLIENT_WARN(K8sDebug, string("K8S CLIENT: Error parsing API metadata: ") + e.what());
+        K8S_CLIENT_WARN(K8sWarning, string("K8S CLIENT: Error parsing API metadata: ") + e.what());
         return EXIT_FAILURE;
     }
 
@@ -159,7 +159,7 @@ int K8sClient::BulkGet(const std::string &kind,
     auto kindInfoFound = kindInfoMap_.find(kind);
     if (kindInfoFound == kindInfoMap_.end())
     {
-        K8S_CLIENT_WARN(K8sDebug, string("K8S CLIENT: Kind not supported: ") + kind);
+        K8S_CLIENT_WARN(K8sWarning, string("K8S CLIENT: Kind not supported: ") + kind);
         return 400;
     }
 
@@ -173,9 +173,9 @@ int K8sClient::BulkGet(const std::string &kind,
             RestClient::Response response = cx_->get(bulkGetPath + 
                 (continueToken.empty() ? "" : "&continue=" + continueToken));
             if (response.code != 200) {
-                K8S_CLIENT_WARN(K8sDebug, 
-                    string("K8S CLIENT: Unexpected reponse from API server: ") + 
-                    response.body);
+                K8S_CLIENT_WARN(K8sWarning, 
+                    "K8S CLIENT: Unexpected reponse from API server " + 
+                    k8sUrl().apiUrl() + ": " + response.body);
                 return response.code;
             }
             // Parse the response received.
@@ -207,7 +207,7 @@ int K8sClient::BulkGet(const std::string &kind,
     }
     catch(const std::exception& e)
     {
-        K8S_CLIENT_WARN(K8sDebug, string("K8S CLIENT: Error parsing bulk data: ") + e.what());
+        K8S_CLIENT_WARN(K8sWarning, string("K8S CLIENT: Error parsing bulk data: ") + e.what());
         return 400;
     }
 
