@@ -620,6 +620,7 @@ void ConfigK8sClient::K8sJsonConvert(
         }
     }
 
+    // TODO: Remove when fqName moved to spec.
     // Add and rename fqName
     Value::ConstMemberIterator status = dom.FindMember("status");
     Value::ConstMemberIterator fq_name = status->value.FindMember("fqName");
@@ -765,6 +766,11 @@ void ConfigK8sClient::K8sJsonConvert(
     // Add all the values not duplicated from the status.
     auto spec = dom.FindMember("spec");
     if (spec != dom.MemberEnd() && !spec->value.IsNull()) {
+        // TODO: Remove conditional when fqName moved to spec.
+        if (fq_name == status->value.MemberEnd()) {
+            fq_name = spec->value.FindMember("fqName");
+        }
+
         for (auto spec_member = spec->value.MemberBegin();
             spec_member != spec->value.MemberEnd();
             ++spec_member)
@@ -777,6 +783,11 @@ void ConfigK8sClient::K8sJsonConvert(
             }
             else if (spec_member_name.rfind("References") != string::npos) {
                 continue;
+            }
+            else if (spec_member_name == "fqName")
+            {
+                Value fq_name_val(spec_member->value, cass_dom.GetAllocator());
+                cass_dom.AddMember("fq_name", fq_name_val, cass_dom.GetAllocator());
             }
             else
             {
@@ -929,9 +940,9 @@ void ConfigK8sClient::EnqueueUUIDRequest(string oper,
                                                         uuid + " object: " + JsonToString(cass_json) + ". Skipping");
             return;
         }
-        string fq_name_str = FqNameToString(fq_name->value);
         if (FindFQName(uuid) == "ERROR")
         {
+            string fq_name_str = FqNameToString(fq_name->value);
             AddFQNameCache(uuid, type_str, fq_name_str);
             CONFIG_CLIENT_DEBUG(
                 ConfigClientMgrDebug, 
@@ -1521,20 +1532,6 @@ void ConfigK8sPartition::ProcessUUIDUpdate(const string &uuid,
     string key;
 
     /**
-      * If type or fq-name is not present in the db object, ignore
-      * the object and trigger delete of the object.
-      */
-    if (!updDoc.HasMember("fq_name") ||
-        !updDoc.HasMember("type"))
-    {
-        CONFIG_CLIENT_WARN(ConfigClientGetRowError,
-                           "fq_name or type not present for ",
-                           "obj_uuid_table with uuid: ", uuid);
-        ProcessUUIDDelete(uuid);
-        return;
-    }
-
-    /**
       * If cache is new, we can send the cacheDoc as is down to
       * the IFMAP server to send as update.
       * If not, we compare the cached version with the updated
@@ -1583,16 +1580,7 @@ void ConfigK8sPartition::ProcessUUIDUpdate(const string &uuid,
             }
             else if (key.compare("fq_name") == 0)
             {
-                string fq_name;
-                const Value &name = updDoc[key.c_str()];
-                for (Value::ConstValueIterator name_itr = name.Begin();
-                     name_itr != name.End(); ++name_itr)
-                {
-                    fq_name += name_itr->GetString();
-                    fq_name += ":";
-                }
-                fq_name.erase(fq_name.end() - 1);
-                cache->SetFQName(fq_name);
+                cache->SetFQName(ConfigK8sClient::FqNameToString(itr->value));
             }
         }
 
