@@ -1354,15 +1354,15 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
                 {
                     if (va["attr"].IsNull())
                     {
-                        (*v)[i].RemoveMember("attr");
+                        va.RemoveMember("attr");
                         Value vm;
-                        (*v)[i].AddMember("attr", vm.SetObject(), a);
+                        va.AddMember("attr", vm.SetObject(), a);
                     }
                 }
 
                 // If ref_fq_name is missing from doc, add the
                 // string formatted fq_name.
-                if ((*v)[i].FindMember("to") == (*v)[i].MemberEnd())
+                if (va.FindMember("to") == va.MemberEnd())
                 {
                     Value &uuidVal = va["uuid"];
                     const string ref_uuid = uuidVal.GetString();
@@ -1389,7 +1389,7 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
                         "FindFQName(" + uuid + ") == " + ref_fq_name);
 
                     Value vs1(ref_fq_name.c_str(), a);
-                    (*v)[i].AddMember("to", vs1, a);
+                    va.AddMember("to", vs1, a);
                 }
             }
 
