@@ -777,12 +777,10 @@ void ConfigK8sClient::K8sJsonConvert(
         {
             std::string spec_member_name = spec_member->name.GetString();
 
-            // Look for parent ref in the spec, but ignore other references.
-            if (spec_member_name == "parent") {
+            if (spec_member_name == "parent" || 
+                spec_member_name.rfind("References") != string::npos)
+            {
                 ConfigK8sClient::K8sJsonAddRefs(spec_member, fq_name, cass_dom);
-            }
-            else if (spec_member_name.rfind("References") != string::npos) {
-                continue;
             }
             else if (spec_member_name == "fqName")
             {
