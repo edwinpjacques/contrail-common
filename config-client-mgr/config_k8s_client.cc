@@ -1285,7 +1285,6 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
         string wrapper = client()->mgr()->config_json_parser()->GetWrapperFieldName(obj_type, key.c_str());
         if (!wrapper.empty())
         {
-
             /**
               * Handle prop_map and prop_list objects.
               * Need to indicate in cache if they are NULL.
@@ -1305,7 +1304,6 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
         }
         else if (key.compare("parent_type") == 0)
         {
-
             /**
               * Process parent_type. Need to change - to _.
               */
@@ -1317,7 +1315,6 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
         }
         else if (key.compare("bgpaas_session_attributes") == 0)
         {
-
             /**
               * Process bgpaas_session_attributes property.
               * Value needs to be set to "".
@@ -1327,7 +1324,6 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
         }
         else if (key.find("_refs") != string::npos && add_change)
         {
-
             /**
               * For _refs, if attr is NULL,
               * replace NULL with "".
@@ -1347,7 +1343,6 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
             assert(v->IsArray());
             for (SizeType i = 0; i < v->Size(); i++)
             {
-
                 // Process NULL attr
                 Value &va = (*v)[i];
                 if (link_with_attr)
@@ -1364,9 +1359,19 @@ bool ConfigK8sPartition::GenerateAndPushJson(const string &uuid,
                 // string formatted fq_name.
                 if (va.FindMember("to") == va.MemberEnd())
                 {
-                    Value &uuidVal = va["uuid"];
-                    const string ref_uuid = uuidVal.GetString();
-                    string ref_fq_name = client()->FindFQName(ref_uuid);
+                    auto ref_iter = va.FindMember("uuid");
+                    string ref_uuid;
+                    string ref_fq_name;
+                    if (ref_iter != va.MemberEnd())
+                    {
+                        ref_uuid = ref_iter->value.GetString();
+                        ref_fq_name = client()->FindFQName(ref_uuid);
+                    }
+                    else
+                    {
+                        v->GetArray().Erase(&va);
+                        continue;
+                    }
 
                     // If we get the response back "ERROR", it is likely that
                     // a request is being process out-of-order 
