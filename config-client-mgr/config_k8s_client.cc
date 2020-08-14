@@ -100,6 +100,8 @@ ConfigK8sClient::ConfigK8sClient(ConfigClientManager *mgr,
     k8s_to_cass_name_conversion_["NetworkIPAM"] = "network_ipam";
     k8s_to_cass_name_conversion_["InstanceIP"] = "instance_ip";
     k8s_to_cass_name_conversion_["BGPRouter"] = "bgp_router";
+    k8s_to_cass_name_conversion_["fabricSNAT"] = "fabric_snat";
+    k8s_to_cass_name_conversion_["routingInstanceFabricSNAT"] = "routing_instance_fabric_snat";
 
     // Automatically populate a reverse map as well
     for(auto key_value = k8s_to_cass_name_conversion_.begin(); 
