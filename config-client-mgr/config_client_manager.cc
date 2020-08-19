@@ -114,7 +114,11 @@ void ConfigClientManager::SetUp() {
         config_db_client_.reset(ConfigFactory::Create<ConfigK8sClient>
                                 (this, evm_, config_options_,
                                  thread_count_));
-        config_json_parser_->SetDbOrigin(IFMapOrigin::K8S);
+        // TODO: Doing this makes logging more correct, but IFMap has hard-coded
+        //       logic that expects IFMapOrigin::CASSANDRA that is hard to replace.
+        //       It will be easiest to just remove Cassandra and RabbitMQ support
+        //       altogether.
+        // config_json_parser_->SetDbOrigin(IFMapOrigin::K8S);
     } else {
         config_db_client_.reset(
                 ConfigFactory::Create<ConfigCassandraClient>(this, evm_,
