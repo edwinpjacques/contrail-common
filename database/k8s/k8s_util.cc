@@ -50,5 +50,5 @@ void k8s::client::InitConnection(k8s::client::ConnectionPtr& cx,
 
 void k8s::client::RequestResync()
 {
-    kill(0, SIGUSR1);
+    kill(getpid(), SIGUSR1);
 }
