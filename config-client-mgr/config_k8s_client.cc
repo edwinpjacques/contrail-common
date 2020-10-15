@@ -19,6 +19,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <fstream>
 #include <utility>
 
 #include "base/string_util.h"
@@ -96,20 +97,7 @@ ConfigK8sClient::ConfigK8sClient(ConfigClientManager *mgr,
       num_workers_(num_workers)
 {
     // Initialize map of K8s property names to Cassandra JSON
-    k8s_to_cass_name_conversion_["attributes"] = "attr";
-    k8s_to_cass_name_conversion_["NetworkIPAM"] = "network_ipam";
-    k8s_to_cass_name_conversion_["InstanceIP"] = "instance_ip";
-    k8s_to_cass_name_conversion_["BGPRouter"] = "bgp_router";
-    k8s_to_cass_name_conversion_["fabricSNAT"] = "fabric_snat";
-    k8s_to_cass_name_conversion_["routingInstanceFabricSNAT"] = "routing_instance_fabric_snat";
-
-    // Automatically populate a reverse map as well
-    for(auto key_value = k8s_to_cass_name_conversion_.begin(); 
-        key_value != k8s_to_cass_name_conversion_.end(); 
-        ++key_value)
-    {
-        cass_to_k8s_name_conversion_[key_value->second] = key_value->first;
-    }
+    K8sToCassNameConversionInit();
 
     std::vector<K8sUrl> k8sUrls;
     for(size_t i = 0; i < config_db_ips().size(); ++i)
@@ -144,6 +132,63 @@ ConfigK8sClient::ConfigK8sClient(ConfigClientManager *mgr,
 ConfigK8sClient::~ConfigK8sClient()
 {
     STLDeleteValues(&partitions_);
+}
+
+// Initialize map of K8s property names to Cassandra JSON
+void ConfigK8sClient::K8sToCassNameConversionInit()
+{
+    // Find the map file
+    auto k8s_to_cass_file_name_c_str = std::getenv("CONFIG_K8S_MAP");
+    std::string k8s_to_cass_file_name;
+    if (k8s_to_cass_file_name_c_str != NULL)
+    {
+        k8s_to_cass_file_name = k8s_to_cass_file_name_c_str;
+    }
+    else
+    {
+        k8s_to_cass_file_name = "config_k8s_map.txt";
+    }
+
+    // Try to read from the override file first
+    std::ifstream k8s_to_cass_file(k8s_to_cass_file_name.c_str());
+    if (k8s_to_cass_file.is_open())
+    {
+        std::string line;
+        while (std::getline(k8s_to_cass_file, line))
+        {
+            // File is simple "key=value" w/o spaces
+            // Skip lines without '='
+            auto delim = line.find('=');
+            if (delim == std::string::npos)
+            {
+                continue;
+            }
+            auto k8s_name = line.substr(0, delim);
+            auto cass_name = line.substr(delim + 1, line.size() - 1 - delim);
+            k8s_to_cass_name_conversion_[k8s_name] = cass_name;
+        }
+    }
+    else
+    {
+        // Known defaults if override file is missing
+        k8s_to_cass_name_conversion_["attributes"] = "attr";
+        k8s_to_cass_name_conversion_["NetworkIPAM"] = "network_ipam";
+        k8s_to_cass_name_conversion_["InstanceIP"] = "instance_ip";
+        k8s_to_cass_name_conversion_["BGPRouter"] = "bgp_router";
+        k8s_to_cass_name_conversion_["fabricSNAT"] = "fabric_snat";
+        k8s_to_cass_name_conversion_["routingInstanceFabricSNAT"] = "routing_instance_fabric_snat";
+    }
+
+    // Automatically populate a reverse map as well
+    for(auto key_value = k8s_to_cass_name_conversion_.begin();
+        key_value != k8s_to_cass_name_conversion_.end();
+        ++key_value)
+    {
+        CONFIG_CLIENT_DEBUG(
+            ConfigClientMgrDebug,
+            "K8S SM: Mapped K8s keyword " + key_value->first + " to " + key_value->second);
+        cass_to_k8s_name_conversion_[key_value->second] = key_value->first;
+    }
 }
 
 void ConfigK8sClient::StartWatcher()

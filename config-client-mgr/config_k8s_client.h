@@ -175,6 +175,9 @@ public:
                     int num_workers);
     virtual ~ConfigK8sClient();
 
+    // Configure the map of K8s names to Cass
+    virtual void K8sToCassNameConversionInit();
+
     // Called by InitConfigClient() to initialize bulk synchronization.
     virtual void InitDatabase();
     void BulkSyncDone();
